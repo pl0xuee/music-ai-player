@@ -1013,7 +1013,22 @@ impl Downloads {
                 path
             }
         };
-        let incoming = self.incoming_dir();
+        // The scratch directory goes *inside* the destination, not beside the
+        // library, so that finishing a download is a rename.
+        //
+        // yt-dlp finishes with `shutil.move`, which is only `os.rename` when
+        // both ends are on one filesystem; across two it copies and then calls
+        // `copystat` to carry the timestamps and mode over. A network mount is
+        // where that stops being free — an SMB share over kio-fuse copies the
+        // bytes happily and then refuses the metadata:
+        //
+        //     Inappropriate ioctl for device: '…/Vibe Motors/….opus'
+        //
+        // The file was already there and complete; only the stat call failed,
+        // and the whole download was reported as failed because of it. Keeping
+        // the scratch space on the destination means there is nothing to copy
+        // and no stat to carry, whatever the destination happens to be.
+        let incoming = tracks_dir.join(INCOMING_DIRNAME);
         std::fs::create_dir_all(&incoming)
             .map_err(|e| format!("cannot create {}: {e}", incoming.display()))?;
         clear_dir(&incoming);
