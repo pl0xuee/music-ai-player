@@ -671,6 +671,95 @@ body::after {
 
 .row-tools {
   padding-right: 8px;
+  position: relative;
+}
+
+/* The playlist menu on a library row.
+   Anchored to the button and right-aligned, because the button sits at the
+   right edge of a narrow column and a left-aligned menu would open off-panel. */
+.pl-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 8px;
+  z-index: 40;
+  min-width: 208px;
+  max-width: 280px;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  background: var(--raise);
+  border: 1px solid var(--edge);
+  border-radius: 10px;
+  box-shadow: var(--drop);
+  /* Long lists scroll rather than running off the bottom of the window. */
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.pl-menu-head {
+  margin: 0;
+  padding: 4px 8px 6px;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+
+.pl-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 7px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.pl-menu-item:hover,
+.pl-menu-item:focus-visible {
+  background: var(--slab);
+}
+
+.pl-menu-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pl-menu-count {
+  flex: none;
+  font-size: 11px;
+  color: var(--faint);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Separated from the playlists above it: it makes something rather than
+   choosing something, which is a different kind of action. */
+.pl-menu-item.is-new {
+  margin-top: 4px;
+  border-top: 1px solid var(--edge);
+  border-radius: 0 0 6px 6px;
+  padding-top: 9px;
+  color: var(--mute);
+}
+
+.pl-menu-new {
+  margin-top: 4px;
+  padding-top: 7px;
+  border-top: 1px solid var(--edge);
+}
+
+.pl-menu-new .input {
+  width: 100%;
+  font-size: 13px;
 }
 
 .icon {

@@ -1,6 +1,7 @@
+import { useEffect, useRef, useState } from "react";
 import type { PanelView } from "./PanelTabs";
 import { PanelTabs } from "./PanelTabs";
-import type { Track } from "../types";
+import type { Playlist, Track } from "../types";
 import { SOURCE_LABEL, isGenerated, meaningfulGenre } from "../types";
 import { clock, key } from "../format";
 
@@ -17,14 +18,63 @@ interface Props {
   currentId: number | null;
   queuedId: number | null;
   onPlay: (track: Track) => void;
-  /** Set when a playlist is selected, so rows can offer to join it. */
-  addTarget: { id: number; name: string } | null;
-  onAdd: (track: Track) => void;
+  /** Every playlist, so a row can offer all of them rather than one. */
+  playlists: Playlist[];
+  onAddTo: (track: Track, playlistId: number) => void;
+  /** Make a playlist and put this track in it, in one go. */
+  onCreateWith: (track: Track, name: string) => void;
 }
 
 export function LibraryPanel(props: Props) {
-  const { view, onView, playlistCount, onRefresh, refreshing, genre, genreOptions, onGenre, tracks, currentId, queuedId, onPlay, addTarget, onAdd } =
-    props;
+  const {
+    view,
+    onView,
+    playlistCount,
+    onRefresh,
+    refreshing,
+    genre,
+    genreOptions,
+    onGenre,
+    tracks,
+    currentId,
+    queuedId,
+    onPlay,
+    playlists,
+    onAddTo,
+    onCreateWith,
+  } = props;
+
+  // The row whose playlist menu is open, and the name being typed if the user
+  // asked for a new playlist. Only one menu is ever open, so this is a single
+  // id rather than a set.
+  const [menuFor, setMenuFor] = useState<number | null>(null);
+  const [draft, setDraft] = useState<string | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+
+  const close = () => {
+    setMenuFor(null);
+    setDraft(null);
+  };
+
+  // A menu that can only be dismissed by picking something is a trap, so both
+  // of the ways people expect to escape one are wired up. `mousedown` rather
+  // than `click`, or choosing an item would close the menu on the way down and
+  // never deliver the click.
+  useEffect(() => {
+    if (menuFor === null) return;
+    const onDown = (event: MouseEvent) => {
+      if (menuRef.current !== null && !menuRef.current.contains(event.target as Node)) close();
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") close();
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [menuFor]);
 
   return (
     <aside className="aside" aria-label="Library">
@@ -65,10 +115,10 @@ export function LibraryPanel(props: Props) {
 
       <div className="lib-list">
         {tracks.map((track, index) => {
-          const classes = ["row"];
+          const classes = ["row", "is-pl"];
           if (track.id === currentId) classes.push("is-current");
           if (track.rating === -1) classes.push("is-buried");
-          if (addTarget !== null) classes.push("is-pl");
+          const open = menuFor === track.id;
 
           return (
             <div className={classes.join(" ")} key={track.id}>
@@ -95,19 +145,76 @@ export function LibraryPanel(props: Props) {
                   {marker(track, queuedId)}
                 </span>
               </button>
-              {addTarget !== null && (
-                <div className="row-tools">
-                  <button
-                    type="button"
-                    className="icon"
-                    onClick={() => onAdd(track)}
-                    aria-label={`Add ${track.title} to ${addTarget.name}`}
-                    title={`Add to “${addTarget.name}”`}
-                  >
-                    +
-                  </button>
-                </div>
-              )}
+
+              {/* Offered on every row, always. This used to appear only while a
+                  playlist happened to be selected on the other tab, which meant
+                  the way to put a track in a playlist was to go and select one
+                  first — and nothing on this tab said so. */}
+              <div className="row-tools">
+                <button
+                  type="button"
+                  className="icon"
+                  aria-haspopup="menu"
+                  aria-expanded={open}
+                  onClick={() => (open ? close() : (setDraft(null), setMenuFor(track.id)))}
+                  aria-label={`Add ${track.title} to a playlist`}
+                  title="Add to a playlist"
+                >
+                  +
+                </button>
+
+                {open && (
+                  <div className="pl-menu" role="menu" ref={menuRef}>
+                    <p className="pl-menu-head">Add to</p>
+                    {playlists.map((playlist) => (
+                      <button
+                        key={playlist.id}
+                        type="button"
+                        role="menuitem"
+                        className="pl-menu-item"
+                        onClick={() => {
+                          onAddTo(track, playlist.id);
+                          close();
+                        }}
+                      >
+                        <span className="pl-menu-name">{playlist.name}</span>
+                        <span className="pl-menu-count">{playlist.itemCount}</span>
+                      </button>
+                    ))}
+
+                    {draft === null ? (
+                      <button
+                        type="button"
+                        role="menuitem"
+                        className="pl-menu-item is-new"
+                        onClick={() => setDraft("")}
+                      >
+                        New playlist…
+                      </button>
+                    ) : (
+                      <form
+                        className="pl-menu-new"
+                        onSubmit={(event) => {
+                          event.preventDefault();
+                          const name = draft.trim();
+                          if (name === "") return;
+                          onCreateWith(track, name);
+                          close();
+                        }}
+                      >
+                        <input
+                          className="input"
+                          value={draft}
+                          onChange={(event) => setDraft(event.target.value)}
+                          placeholder="Playlist name"
+                          aria-label="Name for the new playlist"
+                          autoFocus
+                        />
+                      </form>
+                    )}
+                  </div>
+                )}
+              </div>
             </div>
           );
         })}

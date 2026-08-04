@@ -148,11 +148,6 @@ export default function App() {
   const byId = useMemo(() => new Map(library.map((track) => [track.id, track])), [library]);
   const current = currentId === null ? null : (byId.get(currentId) ?? null);
   const queued = queuedId === null ? null : (byId.get(queuedId) ?? null);
-  const selectedPlaylist = useMemo(
-    () => playlists.find((playlist) => playlist.id === playlistId) ?? null,
-    [playlistId, playlists],
-  );
-
   const syncBag = useCallback(() => {
     setBagCounts({ remaining: bag.remaining, size: bag.size });
   }, [bag]);
@@ -667,17 +662,32 @@ export default function App() {
               currentId={currentId}
               queuedId={queuedId}
               onPlay={(track) => playFrom(track, "shuffle")}
-              addTarget={
-                selectedPlaylist === null
-                  ? null
-                  : { id: selectedPlaylist.id, name: selectedPlaylist.name }
-              }
-              onAdd={(track) => {
-                if (selectedPlaylist === null) return;
+              playlists={playlists}
+              onAddTo={(track, playlistId) => {
+                const name = playlists.find((p) => p.id === playlistId)?.name ?? "that playlist";
                 mutate(
-                  addToPlaylist(selectedPlaylist.id, track.id).then((added) => {
-                    if (!added) setNotice(`"${track.title}" is already in that playlist.`);
+                  addToPlaylist(playlistId, track.id).then((added) => {
+                    // Confirmed either way. Adding a track to a playlist on
+                    // another tab changes nothing the user can see from here,
+                    // so silence would be indistinguishable from a dead button.
+                    setNotice(
+                      added
+                        ? `Added “${track.title}” to “${name}”.`
+                        : `“${track.title}” is already in “${name}”.`,
+                    );
                   }),
+                );
+              }}
+              onCreateWith={(track, name) => {
+                mutate(
+                  createPlaylist(name).then((id) =>
+                    addToPlaylist(id, track.id).then(() => {
+                      // Select it too: someone who just named a playlist is
+                      // more likely than not to want to look at it.
+                      setPlaylistId(id);
+                      setNotice(`Added “${track.title}” to “${name}”.`);
+                    }),
+                  ),
                 );
               }}
             />

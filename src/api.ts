@@ -19,7 +19,15 @@ import type {
   YtTools,
 } from "./types";
 import { EMPTY_TOOLS, IDLE_RUN, OFFLINE_ENGINE } from "./types";
-import { DEV_STYLES, devJobs, devPanel, devSourceUrl, devStats, devTracks } from "./dev-fixtures";
+import {
+  DEV_STYLES,
+  devJobs,
+  devPanel,
+  devPlaylists,
+  devSourceUrl,
+  devStats,
+  devTracks,
+} from "./dev-fixtures";
 
 /**
  * `npm run dev` can be opened in a plain browser, where there is no Tauri IPC
@@ -525,7 +533,7 @@ export function mediaKeyStatus(): Promise<MediaKeys> {
 // ---------------------------------------------------------------------------
 
 export function listPlaylists(): Promise<Playlist[]> {
-  if (!IN_TAURI) return Promise.resolve([]);
+  if (!IN_TAURI) return Promise.resolve(devPlaylists());
   return invoke<Playlist[]>("list_playlists");
 }
 

@@ -1,4 +1,4 @@
-import type { DownloadJob, GenStyle, Stats, Track } from "./types";
+import type { DownloadJob, GenStyle, Playlist, Stats, Track } from "./types";
 
 /**
  * Which surface to open on load, from the URL hash — `#generate`, `#import`,
@@ -195,3 +195,25 @@ export const DEV_STYLES: GenStyle[] = [
   { name: "industrial cyberpunk", share: 20, bpm: [82, 100] },
   { name: "deep cyberpunk", share: 10, bpm: [74, 88] },
 ];
+
+/**
+ * A few playlists, so the add-to-playlist menu on a library row can be reviewed
+ * with something in it.
+ *
+ * Names of realistic length on purpose: the menu has to truncate a long one
+ * without pushing the count off the end, and a list of short names would never
+ * show whether it does.
+ */
+export function devPlaylists(): Playlist[] {
+  return [
+    { id: 1, name: "Deep focus", createdAt: "2026-07-02T09:00:00Z", itemCount: 24, seconds: 7_800 },
+    { id: 2, name: "Late shift", createdAt: "2026-07-14T22:10:00Z", itemCount: 8, seconds: 2_400 },
+    {
+      id: 3,
+      name: "Rainy night city — long mixes",
+      createdAt: "2026-07-28T18:30:00Z",
+      itemCount: 131,
+      seconds: 41_000,
+    },
+  ];
+}
