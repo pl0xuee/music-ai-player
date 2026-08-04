@@ -158,23 +158,6 @@ pub struct Proc {
 // Bundle environment
 // ---------------------------------------------------------------------------
 
-/// Colon-separated search paths an AppImage points at its own bundled copies.
-///
-/// The `_1_0` spellings are not redundant: the GStreamer bundling hook exports
-/// both, and a child that reads only the suffixed one would still be steered
-/// into the bundle. Taken from the environment of a running AppImage rather
-/// than from memory.
-const BUNDLE_PATH_LISTS: [&str; 5] = [
-    "LD_LIBRARY_PATH",
-    "GST_PLUGIN_SYSTEM_PATH",
-    "GST_PLUGIN_SYSTEM_PATH_1_0",
-    "GST_PLUGIN_PATH",
-    "GST_PLUGIN_PATH_1_0",
-];
-
-/// Single-file variables pointing into the bundle.
-const BUNDLE_FILES: [&str; 2] = ["GST_PLUGIN_SCANNER", "GST_PLUGIN_SCANNER_1_0"];
-
 /// A `Command` for a tool that belongs to the host, not to this bundle.
 pub fn external(program: impl AsRef<std::ffi::OsStr>) -> Command {
     let mut cmd = Command::new(program);
@@ -199,6 +182,21 @@ pub fn external(program: impl AsRef<std::ffi::OsStr>) -> Command {
 /// "no audio in …" for every track in it. `yt-dlp` reaches `ffmpeg` the same
 /// way, so imports broke identically and just as silently.
 ///
+/// `LD_LIBRARY_PATH` was not the only one. `PYTHONHOME` is pointed at the
+/// bundle too, and `yt-dlp` is a Python program, so it died before it read its
+/// arguments:
+///
+///     Fatal Python error: Failed to import encodings module
+///
+/// which surfaced as nothing more useful than "yt-dlp exited with status 1".
+///
+/// So this does not carry a list of variable names. Two attempts at one both
+/// missed entries that were really there — the `_1_0` GStreamer spellings, then
+/// the Python pair — and a list only fails in this direction, silently, at the
+/// point some new bundling plugin adds a variable nobody here has heard of.
+/// Every variable is examined instead, and one is rewritten only where it names
+/// a path inside `APPDIR`.
+///
 /// Only entries inside `APPDIR` are dropped, so anything the user set for their
 /// own reasons survives. Outside an AppImage there is no `APPDIR` and this does
 /// nothing at all.
@@ -208,23 +206,23 @@ pub fn unbundle(cmd: &mut Command) {
     };
     let appdir = std::path::PathBuf::from(appdir);
 
-    for var in BUNDLE_PATH_LISTS {
-        let Some(value) = std::env::var_os(var) else {
+    for (name, value) in std::env::vars_os() {
+        // Only variables that actually point into the bundle are touched, so
+        // an empty or unrelated value is passed through untouched rather than
+        // being rewritten or dropped.
+        if !points_into(&value, &appdir) {
             continue;
-        };
-        match outside_bundle(&value, &appdir) {
-            Some(kept) => cmd.env(var, kept),
-            None => cmd.env_remove(var),
-        };
-    }
-
-    for var in BUNDLE_FILES {
-        if let Some(value) = std::env::var_os(var) {
-            if std::path::Path::new(&value).starts_with(&appdir) {
-                cmd.env_remove(var);
-            }
         }
+        match outside_bundle(&value, &appdir) {
+            Some(kept) => cmd.env(&name, kept),
+            None => cmd.env_remove(&name),
+        };
     }
+}
+
+/// Whether any entry of `value`, read as a search path, lives in `appdir`.
+fn points_into(value: &std::ffi::OsStr, appdir: &std::path::Path) -> bool {
+    std::env::split_paths(value).any(|entry| entry.starts_with(appdir))
 }
 
 /// The entries of a search path that do not live inside `appdir`, or `None`

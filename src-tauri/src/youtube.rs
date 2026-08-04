@@ -1053,6 +1053,12 @@ impl Downloads {
             "--audio-quality",
             "0",
             "--embed-metadata",
+            // Do not stamp the file with the upload date. Setting times is one
+            // of the things a network mount is most likely not to implement —
+            // an SMB share over kio-fuse refuses it with `Inappropriate ioctl
+            // for device` — and the date is of no use here anyway, because the
+            // library keeps its own record of when a track arrived.
+            "--no-mtime",
             // No `--embed-thumbnail`. Writing cover art into Opus or M4A needs
             // the `mutagen` Python module, which mp3 did not, so keeping the
             // native codec turned an optional nicety into a hard dependency —
