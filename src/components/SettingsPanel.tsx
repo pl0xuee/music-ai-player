@@ -75,8 +75,9 @@ export function SettingsPanel({ open, onClose, stats, crossfade, onCrossfade }: 
 
         <div className="gp-body">
           <section className="gp-section">
-            <h2 className="gp-section-key">Crossfade</h2>
-            <div className="gp-row gp-slider">
+            <div className="gp-head-row">
+              <h2 className="gp-section-key">Crossfade</h2>
+              <div className="gp-row gp-slider">
               <input
                 className="range is-wide"
                 type="range"
@@ -87,9 +88,10 @@ export function SettingsPanel({ open, onClose, stats, crossfade, onCrossfade }: 
                 onChange={(event) => onCrossfade(Number(event.target.value))}
                 aria-label="Crossfade length in seconds"
               />
-              <span className="gp-stat-val">
-                {crossfade === 0 ? "off" : `${crossfade.toFixed(1)}s`}
-              </span>
+                <span className="gp-stat-val">
+                  {crossfade === 0 ? "off" : `${crossfade.toFixed(1)}s`}
+                </span>
+              </div>
             </div>
             <p className="gp-note">
               How long two tracks overlap at a change. A track shorter than twice this hands over
@@ -98,11 +100,9 @@ export function SettingsPanel({ open, onClose, stats, crossfade, onCrossfade }: 
           </section>
 
           <section className="gp-section">
-            <h2 className="gp-section-key">Downloads</h2>
-            <div className="gp-row gp-dest">
-              <span className="gp-path is-grow" title={destination ?? undefined}>
-                {destination ?? "the library’s tracks folder"}
-              </span>
+            <div className="gp-head-row">
+              <h2 className="gp-section-key">Downloads</h2>
+              <div className="gp-row">
               <button
                 type="button"
                 className="btn is-small"
@@ -123,12 +123,16 @@ export function SettingsPanel({ open, onClose, stats, crossfade, onCrossfade }: 
                   Reset
                 </button>
               )}
+              </div>
             </div>
+            <p className="gp-path" title={destination ?? undefined}>
+              {destination ?? "the library’s tracks folder"}
+            </p>
           </section>
 
           <section className="gp-section">
             <h2 className="gp-section-key">Library</h2>
-            <p className="gp-path">{stats.libraryPath === "" ? "not found" : stats.libraryPath}</p>
+            <p className="gp-path gp-spaced">{stats.libraryPath === "" ? "not found" : stats.libraryPath}</p>
             <p className="gp-note">
               {stats.ready} ready · {stats.total} rows in total. Set <code>MUSIC_AI_LIBRARY</code>{" "}
               before launching to point somewhere else.
@@ -136,12 +140,9 @@ export function SettingsPanel({ open, onClose, stats, crossfade, onCrossfade }: 
           </section>
 
           <section className="gp-section">
-            <h2 className="gp-section-key">Updates</h2>
-            <div className="gp-row gp-dest">
-              <span className="gp-path is-grow">
-                Version {version === "" ? "…" : version}
-                {update !== null ? ` — ${update.version} is available` : ""}
-              </span>
+            <div className="gp-head-row">
+              <h2 className="gp-section-key">Updates</h2>
+              <div className="gp-row">
               {update === null ? (
                 <button
                   type="button"
@@ -182,7 +183,12 @@ export function SettingsPanel({ open, onClose, stats, crossfade, onCrossfade }: 
                     : `${Math.round(installing * 100)}%`}
                 </button>
               )}
+              </div>
             </div>
+            <p className="gp-path gp-spaced">
+              Version {version === "" ? "…" : version}
+              {update !== null ? ` — ${update.version} is available` : ""}
+            </p>
             {installing !== null && (
               <div className="gp-bar">
                 <div className="gp-bar-fill" style={{ width: `${installing * 100}%` }} />

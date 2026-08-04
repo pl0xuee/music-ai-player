@@ -330,6 +330,26 @@ export class Player {
 
     const deck: Deck = { id, el, level: 0, track: null, armed: false };
 
+    // The element can be started and stopped by things that never go through
+    // this class: a media key picked up by the engine's own media session, the
+    // desktop's playback controls, MPRIS. The ticker reconciles that while it
+    // is running, but a pause stops the ticker — so an outside *resume* would
+    // otherwise play on with the transport still reading "Play" and the clock
+    // frozen. These two listeners are what make the elements the source of
+    // truth rather than this class's idea of them.
+    el.addEventListener("play", () => {
+      if (this.active !== id) return;
+      this.reportPlaying(this.isPlaying);
+      if (this.isPlaying) {
+        this.driveAnalysis();
+        this.startTicking();
+      }
+    });
+    el.addEventListener("pause", () => {
+      if (this.active !== id) return;
+      this.reportPlaying(this.isPlaying);
+    });
+
     el.addEventListener("ended", () => {
       // Only reached when the crossfade did not take over first — a track
       // shorter than the fade, or nothing queued. Advance immediately.

@@ -68,6 +68,9 @@
   --drop-lg: 0 18px 46px rgba(0, 0, 0, 0.55);
   --sheen: linear-gradient(180deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0) 62%);
 
+  /* One tile of monochrome fractal noise, inlined so nothing is fetched. */
+  --grain: url("data:image/svg+xml;charset=utf-8,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20width%3D%27180%27%20height%3D%27180%27%3E%3Cfilter%20id%3D%27n%27%3E%3CfeTurbulence%20type%3D%27fractalNoise%27%20baseFrequency%3D%270.85%27%20numOctaves%3D%273%27%20stitchTiles%3D%27stitch%27%2F%3E%3CfeColorMatrix%20type%3D%27saturate%27%20values%3D%270%27%2F%3E%3C%2Ffilter%3E%3Crect%20width%3D%27180%27%20height%3D%27180%27%20filter%3D%27url%28%23n%29%27%20opacity%3D%270.05%27%2F%3E%3C%2Fsvg%3E");
+
   --rail-w: 76px;
   --dock-h: 78px;
   --pad: 26px;
@@ -86,13 +89,7 @@ body,
 
 body {
   margin: 0;
-  /* The room the app sits in: a cool wash from the top and a warm one pooling
-     at the bottom left, both barely there. It stops a full-screen dark window
-     from reading as a single flat rectangle. */
-  background:
-    radial-gradient(1200px 620px at 18% 108%, rgba(var(--live-rgb), 0.055), transparent 62%),
-    radial-gradient(900px 520px at 78% -8%, rgba(120, 160, 255, 0.05), transparent 60%),
-    linear-gradient(180deg, #11151d, var(--ink) 42%);
+  background: linear-gradient(180deg, #141922, #0c0f15 62%);
   color: var(--paper);
   font-family: var(--ui);
   font-size: 13.5px;
@@ -111,6 +108,43 @@ body {
 ::selection {
   background: var(--live);
   color: var(--ink);
+}
+
+/* The room the app sits in.
+
+   Behind everything (`z-index: -1`), so the rail, dock and drawers keep their
+   own surfaces and this shows through the main area. Three things at once: a
+   bloom overhead in the colour of the deck that is playing, so the room is lit
+   by the music and shifts across a handover; a cool counter-light from the far
+   corner so the wash has a direction; and a fine grain over the top, which is
+   what actually stops a large dark field from reading as one flat sheet. */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background-image:
+    var(--grain),
+    radial-gradient(1200px 560px at 42% -12%, rgba(var(--live-rgb), 0.13), transparent 64%),
+    radial-gradient(980px 700px at 104% 88%, rgba(70, 130, 235, 0.09), transparent 62%),
+    radial-gradient(760px 520px at -6% 104%, rgba(var(--live-rgb), 0.06), transparent 60%);
+  background-size:
+    180px 180px,
+    auto,
+    auto,
+    auto;
+  transition: background-image 500ms linear;
+}
+
+/* A vignette, so the window has edges and the middle is where the light is. */
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background: radial-gradient(125% 105% at 50% 38%, transparent 58%, rgba(0, 0, 0, 0.3));
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1269,9 +1303,54 @@ input[type="radio"] {
   color: var(--paper);
 }
 
+/* Drawer content is capped and the sections are ruled off from each other.
+
+   Full-window width is the wrong measure for prose: a line of explanation
+   running 1100px is genuinely hard to read, and a control parked at the far
+   right of it has lost any visible connection to the label it belongs to. */
 .gp-body {
   display: grid;
-  gap: 14px;
+  gap: 0;
+  max-width: 760px;
+}
+
+.gp-section {
+  padding: 15px 0;
+  border-top: 1px solid var(--edge-soft);
+}
+
+.gp-body > .gp-section:first-child {
+  border-top: 0;
+  padding-top: 4px;
+}
+
+/* Heading on the left, its control on the right, on one line. */
+.gp-head-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 26px;
+}
+
+.gp-note,
+.gp-detail,
+.dl-report-line {
+  max-width: 66ch;
+}
+
+/* A value line under its heading, rather than jammed against it. */
+.gp-spaced {
+  margin: 8px 0 0;
+}
+
+.gp-section > .gp-note:first-of-type,
+.gp-head-row + .gp-note {
+  margin: 8px 0 0;
+}
+
+.gp-section > p {
+  margin: 6px 0 0;
 }
 
 /* The download folder, on one line with its label. A section of its own pushed
@@ -1300,12 +1379,21 @@ input[type="radio"] {
   font-size: 11.5px;
 }
 
-.gp-section {
+.gp-section-body {
   display: grid;
   gap: 8px;
+  margin-top: 8px;
 }
 
-.gp-section-key,
+.gp-section-key {
+  margin: 0;
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--paper);
+}
+
 .gp-stat-key,
 .gp-preset-note {
   font-size: 9.5px;

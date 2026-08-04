@@ -212,6 +212,39 @@ test("W2: a deck left running with no track is not reported as playing", async (
   assert.equal(harness.last("statechange").playing, false);
 });
 
+test("W2: an element started from outside the player still updates the transport", async (t) => {
+  const harness = install();
+  t.after(() => harness.dispose());
+  const { player } = harness;
+
+  const a = makeTrack(1);
+  playInOrder(player, [a]);
+  harness.setDuration(a.id, 30);
+  await player.play(a);
+  await harness.advance(1);
+  player.pause();
+  assert.equal(harness.last("statechange").playing, false);
+
+  // A media key the engine's own media session picked up: the element starts
+  // again without this class being told. The ticker is stopped while paused, so
+  // nothing would notice — the music would play on with the button reading
+  // "Play" and the clock frozen.
+  const el = harness.activeEl();
+  el.paused = false;
+  el.dispatch("play");
+  await flush();
+
+  assert.equal(
+    harness.last("statechange").playing,
+    true,
+    "the transport must follow the element, whoever started it",
+  );
+
+  const before = harness.progressTicks;
+  await harness.advance(1);
+  assert.ok(harness.progressTicks > before, "and the ticker must be running again");
+});
+
 /* --- C1: a missing file must not kill the player silently ------------------ */
 
 test("C1: a resolver that rejects mid-session does not strand the player", async (t) => {
