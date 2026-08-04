@@ -80,6 +80,21 @@ pub fn scan_local(
     let total = files.len();
     let conn = lib.connect()?;
 
+    // Committed in batches rather than per row. SQLite gives every unwrapped
+    // INSERT its own transaction, and therefore its own fsync: adopting a real
+    // music collection of several thousand files that way takes minutes of
+    // pure disk sync. Batching keeps the write lock short enough that the
+    // generator can still get in between batches, and means an interrupted
+    // scan keeps everything up to the last commit rather than nothing.
+    const BATCH: usize = 200;
+    let mut open_batch = false;
+    let begin = |conn: &rusqlite::Connection| -> Result<(), String> {
+        conn.execute_batch("BEGIN").map_err(|e| e.to_string())
+    };
+    let commit = |conn: &rusqlite::Connection| -> Result<(), String> {
+        conn.execute_batch("COMMIT").map_err(|e| e.to_string())
+    };
+
     let mut report = ScanReport {
         added: 0,
         skipped: 0,
@@ -89,6 +104,10 @@ pub fn scan_local(
     };
 
     for (done, file) in files.iter().enumerate() {
+        if !open_batch {
+            begin(&conn)?;
+            open_batch = true;
+        }
         let _ = app.emit(
             EV_PROGRESS,
             ScanProgress {
@@ -99,31 +118,43 @@ pub fn scan_local(
         );
 
         let path = file.to_string_lossy().into_owned();
+        // No `continue` anywhere in here: it would jump the batch check at the
+        // bottom, and a scan that is mostly files already held would then keep
+        // one transaction open from beginning to end — the exact lock the
+        // batching exists to avoid.
         if find_by_path(&conn, &path)?.is_some() {
             report.skipped += 1;
-            continue;
-        }
-
-        match probe(file) {
-            // No duration means ffprobe could not find an audio stream, which
-            // is the difference between a file named `.mp3` and a file that is
-            // one. A ready row pointing at the former stalls a deck.
-            None => {
-                report.failed += 1;
-                if report.errors.len() < 5 {
-                    report.errors.push(format!("no audio in {}", file_label(file)));
-                }
-            }
-            Some(found) => match insert_local(&conn, &found) {
-                Ok(_) => report.added += 1,
-                Err(err) => {
+        } else {
+            match probe(file) {
+                // No duration means ffprobe found no audio stream, which is the
+                // difference between a file named `.mp3` and a file that is one.
+                // A ready row pointing at the former stalls a deck.
+                None => {
                     report.failed += 1;
                     if report.errors.len() < 5 {
-                        report.errors.push(err);
+                        report.errors.push(format!("no audio in {}", file_label(file)));
                     }
                 }
-            },
+                Some(found) => match insert_local(&conn, &found) {
+                    Ok(_) => report.added += 1,
+                    Err(err) => {
+                        report.failed += 1;
+                        if report.errors.len() < 5 {
+                            report.errors.push(err);
+                        }
+                    }
+                },
+            }
         }
+
+        if (done + 1) % BATCH == 0 {
+            commit(&conn)?;
+            open_batch = false;
+        }
+    }
+
+    if open_batch {
+        commit(&conn)?;
     }
 
     let _ = app.emit(

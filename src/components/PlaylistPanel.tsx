@@ -24,6 +24,8 @@ interface Props {
   onRemoveItem: (itemId: number) => void;
   onMoveItem: (itemId: number, position: number) => void;
   onAddUrls: () => void;
+  onRefresh: () => void;
+  refreshing: boolean;
 }
 
 export function PlaylistPanel(props: Props) {
@@ -45,6 +47,8 @@ export function PlaylistPanel(props: Props) {
     onRemoveItem,
     onMoveItem,
     onAddUrls,
+    onRefresh,
+    refreshing,
   } = props;
 
   // `null` means the name editor is closed; "" is a legitimate in-progress
@@ -69,9 +73,24 @@ export function PlaylistPanel(props: Props) {
     <aside className="aside" aria-label="Playlists">
       <header className="lib-head">
         <PanelTabs view={view} onView={onView} playlistCount={playlists.length} />
-        <span className="lib-count">
-          {selected === null ? `${playlists.length} saved` : `${selected.itemCount} tracks`}
-        </span>
+        <div className="lib-tools">
+          <span className="lib-count">
+            {selected === null ? `${playlists.length} saved` : `${selected.itemCount} tracks`}
+          </span>
+          <button
+            type="button"
+            className="icon"
+            onClick={onRefresh}
+            disabled={refreshing}
+            title="Re-read the library and drop tracks whose files have gone"
+            aria-label="Refresh the library"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M20 12a8 8 0 1 1-2.34-5.66" />
+              <path d="M20 4v4.5h-4.5" />
+            </svg>
+          </button>
+        </div>
       </header>
 
       <div className="pl-body">

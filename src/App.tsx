@@ -490,6 +490,24 @@ export default function App() {
     });
   }, [current, duration, playing, position]);
 
+  /**
+   * The player may not outlive its own row.
+   *
+   * A track whose file has been deleted keeps playing from what the engine has
+   * already buffered, so a refresh that prunes the row leaves the stage reading
+   * "nothing playing" beside a transport that still says Pause. Stopping keeps
+   * the two agreeing, and it covers a row vanishing by any route — a prune, a
+   * delete from another window, a library pointed somewhere else.
+   *
+   * Guarded on a non-empty library so that a failed reload, which briefly
+   * answers with nothing, cannot stop playback on its own.
+   */
+  useEffect(() => {
+    if (!loaded || currentId === null || library.length === 0) return;
+    if (byId.has(currentId)) return;
+    playerRef.current?.stop();
+  }, [byId, currentId, library.length, loaded]);
+
   // -- local files ----------------------------------------------------------
 
   /**
@@ -686,6 +704,8 @@ export default function App() {
               onRemoveItem={(itemId) => mutate(removeItem(itemId))}
               onMoveItem={(itemId, position) => mutate(reorderItem(itemId, position))}
               onAddUrls={() => setImportOpen(true)}
+              onRefresh={handleRefresh}
+              refreshing={refreshing}
             />
           )}
         </main>
