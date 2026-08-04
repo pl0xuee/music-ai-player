@@ -69,11 +69,17 @@ type StartResult =
   | "superseded";
 
 /**
- * How far the analysis element may drift from the audible deck before it is
- * pulled back. A spectrum a tenth of a second out is not something an eye can
- * see, and correcting more eagerly than this would re-seek constantly.
+ * How far the analysis element may drift before it is pulled back.
+ *
+ * Deliberately large. Both elements play the same file at the same rate, so
+ * after the initial sync they stay together on their own and any correction is
+ * a seek — which stalls the pipeline while it re-buffers. That stall is a
+ * visible dropout: the bars fall to nothing while the peak-holds linger, then
+ * everything comes back. A spectrum a second or two out of step is invisible;
+ * a dropout every few seconds is not, so this only fires when something has
+ * gone properly wrong.
  */
-const ANALYSIS_DRIFT_SECONDS = 0.35;
+const ANALYSIS_DRIFT_SECONDS = 5;
 
 /**
  * Floor on how often the analysis element may be re-seeked.
@@ -257,12 +263,12 @@ export class Player {
   private createAnalysisElement(): HTMLAudioElement | null {
     if (typeof this.ctx.createMediaElementSource !== "function") return null;
     const el = new Audio();
-    // `none`, unlike the decks. This element never needs to be ready ahead of
-    // time — it is told to play at the same moment the deck is already playing
-    // — and asking it to buffer eagerly makes WebKit write a second full copy
-    // of the track to disk before the first one has finished arriving. On a
-    // 272 MB mix that is 272 MB of pure overhead in front of the first sample.
-    el.preload = "none";
+    // `metadata`, not `auto`: this element never has to be ready ahead of time,
+    // and asking it to buffer eagerly makes WebKit write a second full copy of
+    // the track to disk before the first has finished arriving — 272 MB of pure
+    // overhead in front of the first sample on a long mix. Not `none` either,
+    // which leaves it with nothing at all to start from.
+    el.preload = "metadata";
     el.crossOrigin = "anonymous";
     this.ctx.createMediaElementSource(el).connect(this.analyserNode);
     return el;
@@ -290,6 +296,9 @@ export class Player {
       }
       if (el.getAttribute("src") !== src) {
         el.src = src;
+        // The one correction that always matters: a new source starts at zero
+        // while the deck may be well into the track.
+        this.lastResync = 0;
       }
       if (deck.el.paused) {
         if (!el.paused) el.pause();

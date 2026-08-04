@@ -10,6 +10,9 @@ interface Props {
   playlistCount: number;
   onRefresh: () => void;
   refreshing: boolean;
+  genre: string;
+  genreOptions: string[];
+  onGenre: (genre: string) => void;
   tracks: Track[];
   currentId: number | null;
   queuedId: number | null;
@@ -20,7 +23,7 @@ interface Props {
 }
 
 export function LibraryPanel(props: Props) {
-  const { view, onView, playlistCount, onRefresh, refreshing, tracks, currentId, queuedId, onPlay, addTarget, onAdd } =
+  const { view, onView, playlistCount, onRefresh, refreshing, genre, genreOptions, onGenre, tracks, currentId, queuedId, onPlay, addTarget, onAdd } =
     props;
 
   return (
@@ -28,6 +31,21 @@ export function LibraryPanel(props: Props) {
       <header className="lib-head">
         <PanelTabs view={view} onView={onView} playlistCount={playlistCount} />
         <div className="lib-tools">
+          {genreOptions.length > 0 && (
+            <select
+              className="select is-quiet"
+              value={genre}
+              onChange={(event) => onGenre(event.target.value)}
+              aria-label="Filter by genre"
+            >
+              <option value="all">All genres</option>
+              {genreOptions.map((option) => (
+                <option key={option} value={option}>
+                  {option}
+                </option>
+              ))}
+            </select>
+          )}
           <span className="lib-count">{tracks.length} ready</span>
           <button
             type="button"

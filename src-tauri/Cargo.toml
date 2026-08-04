@@ -29,6 +29,7 @@ tauri-plugin-dialog = { version = "2", default-features = false, features = ["xd
 # new one is what comes back.
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
+
 serde = { version = "1", features = ["derive"] }
 # yt-dlp reports each item as a one-line JSON object on stdout; see youtube.rs.
 serde_json = "1"

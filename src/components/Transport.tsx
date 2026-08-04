@@ -10,13 +10,9 @@ interface Props {
   onSkip: () => void;
   volume: number;
   onVolume: (level: number) => void;
-  genre: string;
-  genreOptions: string[];
-  onGenre: (genre: string) => void;
   current: Track | null;
   queued: Track | null;
   fade: PlayerCrossfade | null;
-  onRate: (rating: number) => void;
   position: number;
   duration: number;
   onSeek: (seconds: number) => void;
@@ -40,20 +36,15 @@ export function Transport(props: Props) {
     onSkip,
     volume,
     onVolume,
-    genre,
-    genreOptions,
-    onGenre,
     current,
     queued,
     fade,
-    onRate,
     position,
     duration,
     onSeek,
     incoming,
   } = props;
 
-  const rating = current?.rating ?? 0;
   const fading = fade !== null && fade.progress < 1;
   const length = duration > 0 ? duration : (current?.duration ?? 0);
   const played = length > 0 ? Math.min(position / length, 1) : 0;
@@ -143,40 +134,7 @@ export function Transport(props: Props) {
           </span>
         </div>
 
-        <button
-          type="button"
-          className={rating === 1 ? "btn is-on" : "btn"}
-          onClick={() => onRate(rating === 1 ? 0 : 1)}
-          disabled={current === null}
-          aria-pressed={rating === 1}
-          title="Star this track"
-        >
-          Star
-        </button>
-        <button
-          type="button"
-          className={rating === -1 ? "btn is-on" : "btn"}
-          onClick={() => onRate(rating === -1 ? 0 : -1)}
-          disabled={current === null}
-          aria-pressed={rating === -1}
-          title="Bury this track so shuffle stops offering it"
-        >
-          Bury
-        </button>
 
-        <select
-          className="select"
-          value={genre}
-          onChange={(event) => onGenre(event.target.value)}
-          aria-label="Filter by genre"
-        >
-          <option value="all">All genres</option>
-          {genreOptions.map((option) => (
-            <option key={option} value={option}>
-              {option}
-            </option>
-          ))}
-        </select>
 
         <span className="dock-label">Vol</span>
         <input

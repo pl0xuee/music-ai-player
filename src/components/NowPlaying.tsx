@@ -6,6 +6,7 @@ import { clock, key } from "../format";
 interface Props {
   track: Track | null;
   deck: DeckId;
+  onRate: (rating: number) => void;
   /** Falls back to the row's stored length before the element reports one. */
   duration: number;
 }
@@ -18,7 +19,8 @@ interface Props {
  * desk, which is how the player is used — it sits behind an editor and gets
  * looked at, not operated.
  */
-export function NowPlaying({ track, deck, duration }: Props) {
+export function NowPlaying({ track, deck, duration, onRate }: Props) {
+  const rating = track?.rating ?? 0;
   const tags = track === null ? [] : splitPrompt(track.prompt);
   const length = duration > 0 ? duration : (track?.duration ?? 0);
 
@@ -29,6 +31,39 @@ export function NowPlaying({ track, deck, duration }: Props) {
         {/* The deck letter is the key to the colour the whole interface is
             wearing, so it is named rather than left for the user to infer. */}
         <span className="now-deck">Deck {deck}</span>
+
+        {/* Rating acts on this track, so it belongs beside it rather than in
+            the transport, where it sat among controls that act on playback. */}
+        {track !== null && (
+          <span className="rate">
+            <button
+              type="button"
+              className={rating === 1 ? "rate-btn is-on" : "rate-btn"}
+              onClick={() => onRate(rating === 1 ? 0 : 1)}
+              aria-pressed={rating === 1}
+              title="Star this track"
+              aria-label="Star this track"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M12 4.6l2.3 4.9 5.2.7-3.8 3.6 1 5.2-4.7-2.6-4.7 2.6 1-5.2L4.5 10.2l5.2-.7Z" />
+              </svg>
+            </button>
+            <button
+              type="button"
+              className={rating === -1 ? "rate-btn is-on" : "rate-btn"}
+              onClick={() => onRate(rating === -1 ? 0 : -1)}
+              aria-pressed={rating === -1}
+              title="Bury this track so shuffle stops offering it"
+              aria-label="Bury this track"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M5 7.5h14" />
+                <path d="M9.5 7.5V5.8h5v1.7" />
+                <path d="M6.6 7.5l.9 11h9l.9-11" />
+              </svg>
+            </button>
+          </span>
+        )}
       </div>
 
       {track === null ? (

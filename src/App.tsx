@@ -579,7 +579,7 @@ export default function App() {
       ) : (
         <main className="main">
           <div className="stage">
-            <NowPlaying track={current} deck={deck} duration={duration} />
+            <NowPlaying track={current} deck={deck} duration={duration} onRate={handleRate} />
             <div className="deck">
               <Visualizer analyser={analyser} active={playing} accent={live.rgb} bare />
             </div>
@@ -589,9 +589,12 @@ export default function App() {
               view={view}
               onView={setView}
               playlistCount={playlists.length}
+              genre={genre}
+              genreOptions={genreOptions}
+              onGenre={setGenre}
               onRefresh={handleRefresh}
               refreshing={refreshing}
-              tracks={visible}
+                                tracks={visible}
               currentId={currentId}
               queuedId={queuedId}
               onPlay={(track) => playFrom(track, "shuffle")}
@@ -644,13 +647,9 @@ export default function App() {
         onSkip={handleSkip}
         volume={volume}
         onVolume={handleVolume}
-        genre={genre}
-        genreOptions={genreOptions}
-        onGenre={setGenre}
         current={current}
         queued={queued}
         fade={fade}
-        onRate={handleRate}
         position={position}
         duration={duration}
         onSeek={(seconds) => playerRef.current?.seek(seconds)}
