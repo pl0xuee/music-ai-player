@@ -29,7 +29,12 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # Full history, not the default shallow clone: the release notes are
+      # built from the commits since the previous tag, and neither the tags nor
+      # the commits between them exist in a depth-1 checkout.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-node@v4
         with:
@@ -154,6 +159,47 @@ jobs:
           ' "$VERSION" "$SIG" "$URL" > latest.json
           cat latest.json
 
+      # Notes are assembled rather than fixed, so a release says what actually
+      # changed in it. The list is every commit since the previous tag, taken
+      # from the repository itself — there is no changelog file to forget to
+      # update, and nothing to keep in step by hand.
+      #
+      # Reverted work still appears, as both the change and its revert. That is
+      # accurate rather than tidy: inventing a filter for it would mean guessing
+      # which commits cancel out, and guessing wrong hides real changes.
+      - name: Write the release notes
+        if: github.ref_type == 'tag'
+        run: |
+          set -euo pipefail
+          PREV="$(git describe --tags --abbrev=0 "${GITHUB_REF_NAME}^" 2>/dev/null || true)"
+          if [ -n "$PREV" ]; then
+            RANGE="${PREV}..${GITHUB_REF_NAME}"
+            HEADING="Changes since ${PREV}"
+          else
+            RANGE="${GITHUB_REF_NAME}"
+            HEADING="Changes"
+          fi
+          {
+            echo "A local desktop music player for long coding sessions."
+            echo
+            echo "## ${HEADING}"
+            echo
+            git log --no-merges --pretty=format:'- %s' "$RANGE"
+            echo
+            echo
+            echo "## Install"
+            echo
+            echo 'Download the `.AppImage`, make it executable and run it:'
+            echo
+            echo '```bash'
+            echo 'chmod +x Music*AI*Player_*.AppImage'
+            echo './Music*AI*Player_*.AppImage'
+            echo '```'
+            echo
+            echo "Installed builds update themselves from here — Settings → Updates."
+          } > "$RUNNER_TEMP/notes.md"
+          cat "$RUNNER_TEMP/notes.md"
+
       - name: Publish the release
         if: github.ref_type == 'tag'
         env:
@@ -163,19 +209,7 @@ jobs:
           cd src-tauri/target/release/bundle
           gh release create "$GITHUB_REF_NAME" \
             --title "Music AI Player ${GITHUB_REF_NAME#v}" \
-            --notes "$(cat <<'NOTES'
-          A local desktop music player for long coding sessions.
-
-          Download the `.AppImage`, make it executable and run it:
-
-          ```bash
-          chmod +x Music*AI*Player_*.AppImage
-          ./Music*AI*Player_*.AppImage
-          ```
-
-          Installed builds update themselves from here — Settings → Updates.
-          NOTES
-          )" \
+            --notes-file "$RUNNER_TEMP/notes.md" \
             latest.json \
             appimage/*.AppImage appimage/*.AppImage.sig \
             deb/*.deb deb/*.deb.sig
