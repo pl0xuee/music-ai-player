@@ -7,6 +7,7 @@ import type { MediaKeys, Stats } from "../types";
 /** Where each preference is remembered. Shared with the panels that use them. */
 export const CROSSFADE_KEY = "music-ai-player.crossfade";
 export const DESTINATION_KEY = "music-ai-player.youtube.destination";
+export const VOLUME_KEY = "music-ai-player.volume";
 
 interface Props {
   open: boolean;

@@ -319,6 +319,22 @@ export function reportNowPlaying(now: {
 // Updates
 // ---------------------------------------------------------------------------
 
+/**
+ * The update a check found, kept so installing uses exactly what was offered.
+ *
+ * Re-checking at install time would fetch the manifest again and install
+ * whatever is newest *then* — which is not necessarily what the user read the
+ * notes for and agreed to. Narrow window, but the whole point of showing the
+ * version and notes first is that the thing installed is the thing described.
+ */
+let pending: { version: string; install: Awaited<ReturnType<typeof rawCheck>> } | null = null;
+
+/** Typed handle on the plugin's `check`, so `pending` can name its result. */
+async function rawCheck() {
+  const { check } = await import("@tauri-apps/plugin-updater");
+  return check();
+}
+
 /** What a check found, or null when this build is already the newest. */
 export interface UpdateInfo {
   version: string;
@@ -335,8 +351,8 @@ export interface UpdateInfo {
  */
 export async function checkForUpdate(): Promise<UpdateInfo | null> {
   if (!IN_TAURI) return null;
-  const { check } = await import("@tauri-apps/plugin-updater");
-  const found = await check();
+  const found = await rawCheck();
+  pending = found === null ? null : { version: found.version, install: found };
   if (found === null) return null;
   return { version: found.version, notes: found.body ?? "", date: found.date ?? null };
 }
@@ -351,9 +367,8 @@ export async function checkForUpdate(): Promise<UpdateInfo | null> {
  */
 export async function installUpdate(onProgress: (fraction: number) => void): Promise<void> {
   if (!IN_TAURI) throw new Error("not running inside the desktop shell");
-  const { check } = await import("@tauri-apps/plugin-updater");
-  const found = await check();
-  if (found === null) throw new Error("there is no update to install");
+  const found = pending?.install ?? null;
+  if (found === null) throw new Error("check for an update first");
 
   let total = 0;
   let seen = 0;

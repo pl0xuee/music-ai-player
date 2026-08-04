@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { GenerationPanel } from "./components/GenerationPanel";
 import { LibraryPanel } from "./components/LibraryPanel";
 import { LocalPanel } from "./components/LocalPanel";
-import { CROSSFADE_KEY, SettingsPanel } from "./components/SettingsPanel";
+import { CROSSFADE_KEY, SettingsPanel, VOLUME_KEY } from "./components/SettingsPanel";
 import { NowPlaying } from "./components/NowPlaying";
 import { PlaylistPanel } from "./components/PlaylistPanel";
 import type { PanelView } from "./components/PanelTabs";
@@ -51,6 +51,8 @@ export default function App() {
   bagRef.current ??= new ShuffleBag();
   const bag = bagRef.current;
   const playerRef = useRef<Player | null>(null);
+  /** Read inside the player-construction effect, which must not re-run on it. */
+  const volumeRef = useRef(0.8);
 
   const [library, setLibrary] = useState<Track[]>([]);
   const [visible, setVisible] = useState<Track[]>([]);
@@ -67,7 +69,16 @@ export default function App() {
   const [position, setPosition] = useState(0);
   const [duration, setDuration] = useState(0);
   const [fade, setFade] = useState<PlayerCrossfade | null>(null);
-  const [volume, setVolume] = useState(0.8);
+  const [volume, setVolume] = useState(() => {
+    // The stored string is checked before it is converted, because
+    // `Number(null)` is 0 rather than NaN — and 0 is a legitimate volume, so a
+    // range check cannot tell "muted" from "never set" and a fresh install
+    // would start silent.
+    const stored = window.localStorage.getItem(VOLUME_KEY);
+    if (stored === null) return 0.8;
+    const saved = Number(stored);
+    return Number.isFinite(saved) && saved >= 0 && saved <= 1 ? saved : 0.8;
+  });
   const [bagCounts, setBagCounts] = useState({ remaining: 0, size: 0 });
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -174,7 +185,7 @@ export default function App() {
         : bag.next(current);
     });
     setAnalyser(player.analyser);
-    setVolume(player.getVolume());
+    player.setVolume(volumeRef.current);
 
     const unsubscribe = [
       player.on("trackchange", ({ track, deck: id }) => {
@@ -381,6 +392,7 @@ export default function App() {
   const handleVolume = useCallback((level: number) => {
     playerRef.current?.setVolume(level);
     setVolume(level);
+    window.localStorage.setItem(VOLUME_KEY, String(level));
   }, []);
 
   const handleRate = useCallback(
@@ -537,14 +549,34 @@ export default function App() {
   const [localOpen, setLocalOpen] = useState(!IN_TAURI && devPanel() === "files");
   const [settingsOpen, setSettingsOpen] = useState(!IN_TAURI && devPanel() === "settings");
   const [crossfade, setCrossfadeState] = useState(() => {
-    const saved = Number(window.localStorage.getItem(CROSSFADE_KEY));
+    // Same trap as the volume above: `Number(null)` is 0. Safe here only
+    // because a zero-length crossfade is not a value worth restoring, so the
+    // `> 0` test rejects both "absent" and "off" alike.
+    const stored = window.localStorage.getItem(CROSSFADE_KEY);
+    if (stored === null) return CROSSFADE_SECONDS;
+    const saved = Number(stored);
     return Number.isFinite(saved) && saved > 0 ? saved : CROSSFADE_SECONDS;
   });
   const handleCrossfade = useCallback((seconds: number) => {
     setCrossfadeState(seconds);
     window.localStorage.setItem(CROSSFADE_KEY, String(seconds));
-    playerRef.current?.setCrossfade(seconds);
   }, []);
+
+  /**
+   * Push the setting into the player — including on the first render.
+   *
+   * Applying it only when the slider moved meant a saved value was restored
+   * into the interface and never into the player: Settings would say four
+   * seconds while every handover still took eight. A setting that is displayed
+   * but not in force is worse than one that was never offered.
+   */
+  useEffect(() => {
+    playerRef.current?.setCrossfade(crossfade);
+  }, [crossfade]);
+
+  useEffect(() => {
+    volumeRef.current = volume;
+  }, [volume]);
 
   // Dropping music onto the window is the other half of the same feature. This
   // is the webview's own drag-drop event, not the DOM's: a file dropped on a
