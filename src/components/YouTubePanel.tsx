@@ -2,15 +2,20 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
   onDownloads,
+  pickSaveFolder,
   youtubeCancel,
   youtubeCancelAll,
   youtubeClearFinished,
   youtubeImport,
   youtubeJobs,
+  youtubeRetry,
   youtubeStatus,
 } from "../api";
 import type { DownloadJob, ImportReport, Playlist, YtTools } from "../types";
 import { EMPTY_TOOLS, isSettled } from "../types";
+
+/** Where the chosen download folder is remembered. */
+const DESTINATION_KEY = "music-ai-player.youtube.destination";
 
 interface Props {
   open: boolean;
@@ -39,6 +44,29 @@ export function YouTubePanel(props: Props) {
   const [jobs, setJobs] = useState<DownloadJob[]>([]);
   const [text, setText] = useState("");
   const [wholePlaylist, setWholePlaylist] = useState(false);
+  // Remembered across restarts: somewhere to keep music is a decision made
+  // once, not every time the drawer opens.
+  const [destination, setDestinationState] = useState<string | null>(
+    () => window.localStorage.getItem(DESTINATION_KEY),
+  );
+  const setDestination = useCallback((dir: string | null): void => {
+    setDestinationState(dir);
+    if (dir === null) window.localStorage.removeItem(DESTINATION_KEY);
+    else window.localStorage.setItem(DESTINATION_KEY, dir);
+  }, []);
+  /**
+   * What is in the box, which is not the setting until it is committed.
+   *
+   * Kept separate so a half-typed path is never saved, and so Escape can put
+   * back what was there before.
+   */
+  const [draft, setDraft] = useState<string>(
+    () => window.localStorage.getItem(DESTINATION_KEY) ?? "",
+  );
+  const commitDraft = useCallback((): void => {
+    const trimmed = draft.trim();
+    setDestination(trimmed === "" ? null : trimmed);
+  }, [draft, setDestination]);
   const [report, setReport] = useState<ImportReport | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -79,7 +107,7 @@ export function YouTubePanel(props: Props) {
     if (text.trim().length === 0) return;
     setBusy(true);
     setError(null);
-    void youtubeImport(text, targetId, wholePlaylist)
+    void youtubeImport(text, targetId, wholePlaylist, destination)
       .then((next) => {
         setReport(next);
         // Keep whatever was rejected in the box so it can be fixed, and clear
@@ -124,7 +152,64 @@ export function YouTubePanel(props: Props) {
               </span>
             </div>
             {tools.blocker !== null && <p className="gp-note is-warn">{tools.blocker}</p>}
-            {!blocked && <p className="gp-path">Audio lands in {tools.tracksDir}</p>}
+
+            <div className="gp-row gp-dest">
+              <span className="dock-label">Save to</span>
+              {/* Typed as well as browsed. The system folder chooser only lists
+                  the XDG folders in its sidebar, and anything else — a NAS
+                  mount, /mnt, an external disk — is several clicks down "Other
+                  Locations". Pasting the path is faster and always works. */}
+              <input
+                className="input is-grow"
+                type="text"
+                value={draft}
+                spellCheck={false}
+                placeholder={
+                  tools.tracksDir === "" ? "the library’s tracks folder" : tools.tracksDir
+                }
+                onChange={(event) => setDraft(event.target.value)}
+                onBlur={commitDraft}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") commitDraft();
+                  if (event.key === "Escape") setDraft(destination ?? "");
+                }}
+                aria-label="Folder to save downloads in"
+              />
+              <button
+                type="button"
+                className="btn is-small"
+                onClick={() => {
+                  void pickSaveFolder(destination).then((chosen) => {
+                    if (chosen !== null) {
+                      setDestination(chosen);
+                      setDraft(chosen);
+                    }
+                  });
+                }}
+              >
+                Browse
+              </button>
+              {destination !== null && (
+                <button
+                  type="button"
+                  className="btn is-small"
+                  onClick={() => {
+                    setDestination(null);
+                    setDraft("");
+                  }}
+                  title="Go back to the library’s own tracks folder"
+                >
+                  Reset
+                </button>
+              )}
+            </div>
+            {destination !== null && (
+              <p className="gp-note">
+                Only the audio files land there. Rows still go in the library, so everything plays
+                the same way. The folder is created if it does not exist, and a download refuses to
+                start rather than fall back somewhere else if it cannot be written to.
+              </p>
+            )}
           </section>
 
           <section className="gp-section">
@@ -212,7 +297,7 @@ export function YouTubePanel(props: Props) {
             ) : (
               <div className="dl-list">
                 {[...jobs].reverse().map((job) => (
-                  <JobRow key={job.id} job={job} />
+                  <JobRow key={job.id} job={job} onRetryError={setError} />
                 ))}
               </div>
             )}
@@ -245,9 +330,13 @@ function Report({ report }: { report: ImportReport }) {
   );
 }
 
-function JobRow({ job }: { job: DownloadJob }) {
+function JobRow({ job, onRetryError }: { job: DownloadJob; onRetryError: (why: string) => void }) {
   const running = job.phase === "running";
   const live = running && job.percent > 0;
+  // A download that failed or was cancelled left no row behind, so the same
+  // link can simply go round again. "done" and "skipped" are already in the
+  // library and would only come back as duplicates.
+  const retryable = job.phase === "failed" || job.phase === "cancelled";
 
   return (
     <div className={`dl-job is-${job.phase}`}>
@@ -266,7 +355,24 @@ function JobRow({ job }: { job: DownloadJob }) {
             ✕
           </button>
         ) : (
-          <span className="dl-job-phase">{job.phase}</span>
+          <span className="dl-job-actions">
+            <span className="dl-job-phase">{job.phase}</span>
+            {retryable && (
+              <button
+                type="button"
+                className="btn is-small"
+                onClick={() => {
+                  void youtubeRetry(job.id).catch((err: unknown) =>
+                    onRetryError(err instanceof Error ? err.message : String(err)),
+                  );
+                }}
+                aria-label={`Try ${job.label} again`}
+                title="Queue this link again"
+              >
+                Retry
+              </button>
+            )}
+          </span>
         )}
       </div>
       <div className="gp-bar">

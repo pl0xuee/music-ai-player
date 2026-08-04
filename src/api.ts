@@ -11,11 +11,14 @@ import type {
   MediaKeys,
   Playlist,
   PlaylistItem,
+  PruneReport,
+  ScanReport,
   Stats,
   Track,
   YtTools,
 } from "./types";
-import { EMPTY_STATS, EMPTY_TOOLS, IDLE_RUN, OFFLINE_ENGINE } from "./types";
+import { EMPTY_TOOLS, IDLE_RUN, OFFLINE_ENGINE } from "./types";
+import { devJobs, devSourceUrl, devStats, devTracks } from "./dev-fixtures";
 
 /**
  * `npm run dev` can be opened in a plain browser, where there is no Tauri IPC
@@ -29,23 +32,40 @@ function hasBridge(): boolean {
 export const IN_TAURI = hasBridge();
 
 export function listTracks(genre: string | null): Promise<Track[]> {
-  if (!IN_TAURI) return Promise.resolve([]);
+  if (!IN_TAURI) {
+    const tracks = devTracks();
+    return Promise.resolve(
+      genre === null || genre === "all" ? tracks : tracks.filter((t) => t.genre === genre),
+    );
+  }
   return invoke<Track[]>("list_tracks", { genre });
 }
 
 export function libraryStats(): Promise<Stats> {
-  if (!IN_TAURI) return Promise.resolve(EMPTY_STATS);
+  if (!IN_TAURI) return Promise.resolve(devStats());
   return invoke<Stats>("library_stats");
 }
 
 export function genres(): Promise<string[]> {
-  if (!IN_TAURI) return Promise.resolve([]);
+  if (!IN_TAURI) return Promise.resolve(devStats().genres.map((g) => g.genre));
   return invoke<string[]>("genres");
 }
 
 export function rateTrack(id: number, rating: number): Promise<void> {
   if (!IN_TAURI) return Promise.resolve();
   return invoke<void>("rate_track", { id, rating });
+}
+
+/**
+ * Drop rows whose audio file has gone.
+ *
+ * Files leave without the library hearing about it — a folder is tidied, a
+ * disk is unplugged, test downloads are deleted by hand — and those rows are
+ * already unplayable. This is how they stop taking up space in the list.
+ */
+export function pruneMissing(): Promise<PruneReport> {
+  if (!IN_TAURI) return Promise.resolve({ checked: 0, removed: 0 });
+  return invoke<PruneReport>("prune_missing");
 }
 
 export function markPlayed(id: number): Promise<void> {
@@ -97,7 +117,9 @@ function streamBase(): Promise<string | null> {
  * fallback.
  */
 export async function trackSourceUrl(id: number): Promise<string | null> {
-  if (!IN_TAURI) return null;
+  // Outside the shell every deck loads the same stand-in tone, so the whole
+  // transport can be exercised in a plain browser.
+  if (!IN_TAURI) return devSourceUrl();
 
   const path = await invoke<string | null>("track_source", { id });
   if (path === null) {
@@ -176,6 +198,167 @@ function forgetBuffered(id: number): void {
 }
 
 // ---------------------------------------------------------------------------
+// Local files
+// ---------------------------------------------------------------------------
+
+/**
+ * Adopt every audio file under `paths`, which may be folders, files, or both.
+ *
+ * Nothing is copied. Each row points at the file where it already lives, so
+ * removing a track from the library never touches the user's collection.
+ */
+export function scanLocal(paths: string[]): Promise<ScanReport> {
+  if (!IN_TAURI || paths.length === 0) {
+    return Promise.resolve({ added: 0, skipped: 0, failed: 0, truncated: false, errors: [] });
+  }
+  return invoke<ScanReport>("scan_local", { paths });
+}
+
+/**
+ * Ask for folders to scan.
+ *
+ * Folders rather than files, because a music collection is a tree and picking
+ * 400 tracks by hand is not a thing anyone should do. Dropping loose files onto
+ * the window covers the one-off case.
+ */
+/** One folder, for choosing where downloads should land. */
+export async function pickSaveFolder(current: string | null): Promise<string | null> {
+  if (!IN_TAURI) return null;
+  const { open } = await import("@tauri-apps/plugin-dialog");
+  const chosen = await open({
+    directory: true,
+    multiple: false,
+    title: "Save downloads to",
+    defaultPath: current ?? undefined,
+  });
+  return typeof chosen === "string" ? chosen : null;
+}
+
+export async function pickMusicFolders(): Promise<string[]> {
+  if (!IN_TAURI) return [];
+  const { open } = await import("@tauri-apps/plugin-dialog");
+  const chosen = await open({ directory: true, multiple: true, title: "Add music from a folder" });
+  if (chosen === null) return [];
+  return Array.isArray(chosen) ? chosen : [chosen];
+}
+
+/**
+ * Files and folders dragged onto the window.
+ *
+ * This is the webview's own drag-drop event rather than the DOM's: a file
+ * dropped on a Tauri window never reaches the page as a `DragEvent`, and the
+ * paths it carries are real filesystem paths, which is what the scanner needs.
+ *
+ * `over` fires continuously while something is held over the window, so the UI
+ * can show where to let go.
+ */
+export function onFileDrop(handlers: {
+  over: (active: boolean) => void;
+  drop: (paths: string[]) => void;
+}): () => void {
+  if (!IN_TAURI) return () => {};
+
+  // Four separate events, not one with a discriminated payload. Getting that
+  // wrong fails silently — the listener attaches to a name nothing ever emits
+  // — so the names come from `TauriEvent` in @tauri-apps/api rather than from
+  // memory.
+  const offs: UnlistenFn[] = [];
+  let cancelled = false;
+
+  const sub = <T,>(name: string, handle: (payload: T) => void): void => {
+    void listen<T>(name, (event) => handle(event.payload))
+      .then((off) => {
+        if (cancelled) off();
+        else offs.push(off);
+      })
+      .catch(() => {
+        /* a window with no drag-drop support simply never fires */
+      });
+  };
+
+  sub("tauri://drag-enter", () => handlers.over(true));
+  // `over` fires continuously while something is held over the window. It is
+  // redundant after `enter`, and it is also the one that still arrives if the
+  // pointer entered before the listener was attached.
+  sub("tauri://drag-over", () => handlers.over(true));
+  sub("tauri://drag-leave", () => handlers.over(false));
+  sub<{ paths?: string[] }>("tauri://drag-drop", (payload) => {
+    handlers.over(false);
+    handlers.drop(payload.paths ?? []);
+  });
+
+  return () => {
+    cancelled = true;
+    for (const off of offs) off();
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Updates
+// ---------------------------------------------------------------------------
+
+/** What a check found, or null when this build is already the newest. */
+export interface UpdateInfo {
+  version: string;
+  notes: string;
+  date: string | null;
+}
+
+/**
+ * Ask the release channel whether there is a newer build.
+ *
+ * The manifest is signed and the plugin verifies it against the public key in
+ * `tauri.conf.json` before it will report anything, so an endpoint that has
+ * been tampered with fails the check rather than offering a payload.
+ */
+export async function checkForUpdate(): Promise<UpdateInfo | null> {
+  if (!IN_TAURI) return null;
+  const { check } = await import("@tauri-apps/plugin-updater");
+  const found = await check();
+  if (found === null) return null;
+  return { version: found.version, notes: found.body ?? "", date: found.date ?? null };
+}
+
+/**
+ * Download the new build, install it, and relaunch into it.
+ *
+ * `onProgress` reports 0..1 while the bytes come down. Installing an AppImage
+ * replaces the running image in place, so the relaunch is what actually puts
+ * the user on the new version — without it they keep using the old one until
+ * they quit.
+ */
+export async function installUpdate(onProgress: (fraction: number) => void): Promise<void> {
+  if (!IN_TAURI) throw new Error("not running inside the desktop shell");
+  const { check } = await import("@tauri-apps/plugin-updater");
+  const found = await check();
+  if (found === null) throw new Error("there is no update to install");
+
+  let total = 0;
+  let seen = 0;
+  await found.downloadAndInstall((event) => {
+    if (event.event === "Started") {
+      total = event.data.contentLength ?? 0;
+      onProgress(0);
+    } else if (event.event === "Progress") {
+      seen += event.data.chunkLength;
+      if (total > 0) onProgress(Math.min(seen / total, 1));
+    } else if (event.event === "Finished") {
+      onProgress(1);
+    }
+  });
+
+  const { relaunch } = await import("@tauri-apps/plugin-process");
+  await relaunch();
+}
+
+/** The running build, from Cargo.toml via Tauri. */
+export async function appVersion(): Promise<string> {
+  if (!IN_TAURI) return "dev";
+  const { getVersion } = await import("@tauri-apps/api/app");
+  return getVersion();
+}
+
+// ---------------------------------------------------------------------------
 // Events
 // ---------------------------------------------------------------------------
 
@@ -190,6 +373,7 @@ export const EVENTS = {
   previous: "transport:previous",
   visibility: "window:visibility",
   downloads: "youtube:jobs",
+  localScan: "local:progress",
 } as const;
 
 /**
@@ -342,7 +526,7 @@ export function youtubeStatus(): Promise<YtTools> {
 }
 
 export function youtubeJobs(): Promise<DownloadJob[]> {
-  if (!IN_TAURI) return Promise.resolve([]);
+  if (!IN_TAURI) return Promise.resolve(devJobs());
   return invoke<DownloadJob[]>("youtube_jobs");
 }
 
@@ -357,14 +541,32 @@ export function youtubeImport(
   text: string,
   playlistId: number | null,
   wholePlaylist: boolean,
+  /** Where to write the audio; null is the library's own `tracks/`. */
+  destination: string | null,
 ): Promise<ImportReport> {
   if (!IN_TAURI) return Promise.reject(new Error("not running inside the desktop shell"));
-  return invoke<ImportReport>("youtube_import", { text, playlistId, wholePlaylist });
+  return invoke<ImportReport>("youtube_import", {
+    text,
+    playlistId,
+    wholePlaylist,
+    destination,
+  });
 }
 
 export function youtubeCancel(jobId: number): Promise<void> {
   if (!IN_TAURI) return Promise.resolve();
   return invoke<void>("youtube_cancel", { jobId });
+}
+
+/**
+ * Queue a failed or cancelled download again, replacing the attempt it retries.
+ *
+ * Rejects with the reason when it will not queue — most usefully when the video
+ * turns out to be in the library after all.
+ */
+export function youtubeRetry(jobId: number): Promise<ImportReport> {
+  if (!IN_TAURI) return Promise.reject(new Error("not running inside the desktop shell"));
+  return invoke<ImportReport>("youtube_retry", { jobId });
 }
 
 export function youtubeCancelAll(): Promise<void> {

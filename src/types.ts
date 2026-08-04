@@ -1,5 +1,5 @@
 /** Where a row came from. Mirrors `SOURCE_*` in `src-tauri/src/library.rs`. */
-export type TrackSource = "generated" | "youtube";
+export type TrackSource = "generated" | "youtube" | "local";
 
 /** Mirrors `src-tauri/src/library.rs`. Only `status = 'ready'` rows reach the UI. */
 export interface Track {
@@ -16,16 +16,85 @@ export interface Track {
   lastPlayed: string | null;
   /** -1 buried, 0 unrated, 1 starred. */
   rating: number;
-  /** An import has no tempo, key or prompt; the UI shows the channel instead. */
+  /**
+   * Only a generated row carries tempo, key and prompt. The other two show
+   * who made the audio in that space instead — a channel, or an artist.
+   */
   source: TrackSource;
   videoId: string | null;
   url: string | null;
+  /** Channel for a YouTube import, `artist` tag for a local file. */
   uploader: string | null;
 }
 
 /** True for rows imported from YouTube, which carry no tempo or key. */
 export function isImported(track: Track): boolean {
   return track.source === "youtube";
+}
+
+/**
+ * True when the generator wrote this row, and therefore when tempo, key and
+ * prompt mean anything. Both other sources leave those columns at 0 and "".
+ */
+export function isGenerated(track: Track): boolean {
+  return track.source === "generated";
+}
+
+/** Who to credit, and under what heading. */
+export function creditFor(track: Track): { label: string; value: string } {
+  if (track.source === "youtube") {
+    return { label: "Channel", value: track.uploader ?? "unknown" };
+  }
+  return { label: "Artist", value: track.uploader ?? "unknown" };
+}
+
+export const SOURCE_LABEL: Record<TrackSource, string> = {
+  generated: "Generated",
+  youtube: "YouTube",
+  local: "On disk",
+};
+
+/**
+ * The genre, when it says something the source has not already said.
+ *
+ * Imports get `genre = 'youtube'` and untagged local files get `'local'`, so
+ * showing the column verbatim puts "Genre: youtube" next to "YouTube" and
+ * calls it information. `null` means there is nothing worth a column.
+ */
+export function meaningfulGenre(track: Track): string | null {
+  const genre = track.genre.trim();
+  if (genre === "" || genre.toLowerCase() === track.source) return null;
+  return genre;
+}
+
+// ---------------------------------------------------------------------------
+// Local files — mirrors `src-tauri/src/local.rs`
+// ---------------------------------------------------------------------------
+
+/** Outcome of one folder scan. */
+export interface ScanReport {
+  added: number;
+  /** Already in the library, matched by path. */
+  skipped: number;
+  /** Looked like audio, but nothing could decode it. */
+  failed: number;
+  /** True when the scan hit its file ceiling before running out of folders. */
+  truncated: boolean;
+  errors: string[];
+}
+
+/** Outcome of a cleanup pass over the library. */
+export interface PruneReport {
+  /** Ready rows whose file was checked. */
+  checked: number;
+  /** Rows dropped because the file behind them has gone. */
+  removed: number;
+}
+
+export interface ScanProgress {
+  done: number;
+  total: number;
+  current: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -72,6 +141,8 @@ export interface DownloadJob {
   detail: string;
   playlistId: number | null;
   wholePlaylist: boolean;
+  /** Chosen download folder, or null for the library's own `tracks/`. */
+  destination: string | null;
   added: number;
   skipped: number;
   failed: number;

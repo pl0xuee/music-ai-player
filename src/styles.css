@@ -1,37 +1,77 @@
 /* ---------------------------------------------------------------------------
-   Music AI Player — base layer.
+   Music AI Player
 
-   One accent carries every live signal: the playhead, the selected row, the
-   meters. Everything else is greyscale, so anything standing out is by
-   definition something happening right now.
+   The one idea: this player never has a gap. Two decks overlap for eight
+   seconds at every change, and that handover is the thing it does that other
+   players do not. So the accent colour *is* the deck that is playing — ember
+   for A, arc for B — and across a handover the whole interface moves from one
+   to the other. The playhead, the active row, the meters and the spectrum all
+   read `--live`, which App re-writes as the fade progresses.
 
-   The accent lives in the `--amber*` tokens below. The name is historical —
-   this was an amber phosphor panel before the metal restyle — and it is kept
-   because every rule in this file already reaches for it: theme-metal.css
-   loads last and re-points the same tokens at the brushed-metal palette,
-   where the accent is "brighter" rather than another colour.
+   Everything else is greyscale on purpose. If something has colour in it, it is
+   the music, happening now.
+
+   Type is one superfamily doing three jobs by width: Fira Sans Compressed for
+   titles, Fira Sans for the interface, Fira Mono for anything a machine
+   measured. Width carries the hierarchy, so no second family has to.
 --------------------------------------------------------------------------- */
 
 :root {
-  --void: #08090a;
-  --panel: #0c0e0f;
-  --raise: #111415;
-  --rule: #1b1f21;
-  --rule-warm: #2b2418;
-  --dim: #5d6568;
-  --text: #a9b1b4;
-  --bright: #e6ecee;
-  --amber: #ffb000;
-  --amber-ink: #1a1206;
-  --amber-wash: rgba(255, 176, 0, 0.1);
-  --amber-line: rgba(255, 176, 0, 0.4);
+  /* Surfaces. A blue-cast graphite rather than black, so the two deck colours
+     both sit on it without one looking warmer than the room. Four steps, and
+     depth comes from those rather than from shadow.
 
-  --mono: "JetBrains Mono", "IBM Plex Mono", "DejaVu Sans Mono", ui-monospace,
-    SFMono-Regular, Menlo, Consolas, monospace;
+     Deliberately not as dark as a dark theme can go: this is looked at for
+     hours next to a bright editor, and a near-black panel next to that reads
+     as a hole rather than as a surface. */
+  --ink: #0e1117;
+  --slab: #151922;
+  --raise: #1e242f;
+  --edge: #2e3846;
+  --edge-soft: #232b37;
 
-  --rail-h: 46px;
-  --dock-h: 92px;
-  --pad: 22px;
+  /* Four steps of text, so hierarchy comes from weight and value rather than
+     from making the quiet things nearly unreadable. */
+  --paper: #f3f6fb;
+  --text: #c2cbd9;
+  --mute: #8e9aac;
+  --faint: #64707f;
+
+  /* The decks. Warm and cool, so a handover is legible at the distance this
+     thing is actually read from — across a desk, out of the corner of an eye. */
+  --deck-a: #ff6b3d;
+  --deck-b: #3da5ff;
+
+  /* Re-written by App on every crossfade tick. The fallback is deck A's
+     colour, which is where the player starts. */
+  --live: var(--deck-a);
+  --live-rgb: 255, 107, 61;
+
+  --display: "Fira Sans Compressed", "Fira Sans Condensed", "Archivo Narrow",
+    "DejaVu Sans Condensed", system-ui, sans-serif;
+  --ui: "Fira Sans", "Cantarell", system-ui, -apple-system, sans-serif;
+  --data: "Fira Mono", "JetBrains Mono", "DejaVu Sans Mono", ui-monospace, monospace;
+
+  /* Rows stretched across an ultrawide window leave a canyon between the title
+     and the numbers on the right, and the eye stops being able to pair them.
+     Wider than the default window, so the usual case is untouched. */
+  --content-max: 1380px;
+
+  /* Depth. Flat panels on a flat background give the eye nothing to sit on, so
+     surfaces are lit from above: a hairline highlight along the top edge, a
+     gradient falling away from it, and a shadow underneath. The amounts are
+     small on purpose — this is meant to read as light in a dark room, not as
+     the brushed metal this app used to wear. */
+  --lift: inset 0 1px 0 rgba(255, 255, 255, 0.055);
+  --lift-strong: inset 0 1px 0 rgba(255, 255, 255, 0.09);
+  --drop: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --drop-lg: 0 18px 46px rgba(0, 0, 0, 0.55);
+  --sheen: linear-gradient(180deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0) 62%);
+
+  --rail-w: 76px;
+  --dock-h: 78px;
+  --pad: 26px;
+  --radius: 10px;
 }
 
 * {
@@ -46,329 +86,370 @@ body,
 
 body {
   margin: 0;
-  background: var(--void);
-  color: var(--text);
-  font-family: var(--mono);
-  font-size: 13px;
-  line-height: 1.45;
-  font-variant-numeric: tabular-nums;
+  /* The room the app sits in: a cool wash from the top and a warm one pooling
+     at the bottom left, both barely there. It stops a full-screen dark window
+     from reading as a single flat rectangle. */
+  background:
+    radial-gradient(1200px 620px at 18% 108%, rgba(var(--live-rgb), 0.055), transparent 62%),
+    radial-gradient(900px 520px at 78% -8%, rgba(120, 160, 255, 0.05), transparent 60%),
+    linear-gradient(180deg, #11151d, var(--ink) 42%);
+  color: var(--paper);
+  font-family: var(--ui);
+  font-size: 13.5px;
+  line-height: 1.5;
   -webkit-font-smoothing: antialiased;
   overflow: hidden;
   user-select: none;
 }
 
-/* A barely-there scanline. At 2.5% it reads as CRT texture, not as a filter. */
-body::after {
-  content: "";
-  position: fixed;
-  inset: 0;
-  pointer-events: none;
-  z-index: 100;
-  background: repeating-linear-gradient(
-    to bottom,
-    rgba(255, 255, 255, 0.025) 0 1px,
-    transparent 1px 3px
-  );
-}
-
 :focus-visible {
-  outline: 1px solid var(--amber);
+  outline: 2px solid var(--live);
   outline-offset: 2px;
+  border-radius: 3px;
 }
 
 ::selection {
-  background: var(--amber);
-  color: var(--amber-ink);
+  background: var(--live);
+  color: var(--ink);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }
 
 /* --- shell ---------------------------------------------------------------- */
 
 .shell {
   display: grid;
-  grid-template-rows: var(--rail-h) minmax(0, 1fr) var(--dock-h);
+  grid-template-columns: var(--rail-w) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr) var(--dock-h);
+  grid-template-areas:
+    "rail main"
+    "dock dock";
   height: 100%;
 }
 
+/* --- rail ----------------------------------------------------------------- */
+
 .rail {
+  grid-area: rail;
   display: flex;
+  flex-direction: column;
   align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 0 var(--pad);
-  border-bottom: 1px solid var(--rule);
-  background: var(--panel);
+  gap: 2px;
+  padding: 14px 0 12px;
+  background: linear-gradient(180deg, rgba(30, 36, 47, 0.75), rgba(21, 25, 34, 0.75));
+  border-right: 1px solid var(--edge-soft);
+  box-shadow: 1px 0 0 rgba(0, 0, 0, 0.35);
 }
 
 .mark {
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-  font-size: 12px;
-  letter-spacing: 0.22em;
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  margin-bottom: 12px;
+  border-radius: 11px;
+  background: var(--live);
+  /* The one lit object in the rail, so it gets a real glow rather than a flat
+     fill — it is also the fastest read of which deck is playing. */
+  box-shadow:
+    var(--lift-strong),
+    0 3px 14px rgba(var(--live-rgb), 0.42);
+  color: var(--ink);
+  font-family: var(--display);
+  font-weight: 800;
+  font-size: 19px;
+  letter-spacing: -0.02em;
+  transition: background 220ms linear;
+}
+
+.rail-btn {
+  position: relative;
+  display: grid;
+  justify-items: center;
+  gap: 3px;
+  width: 60px;
+  padding: 9px 0 7px;
+  border: 0;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--mute);
+  font-family: var(--ui);
+  font-size: 9.5px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
   text-transform: uppercase;
-  color: var(--bright);
-  font-weight: 700;
+  cursor: pointer;
+  transition:
+    background 120ms ease,
+    color 120ms ease;
 }
 
-.mark-slash {
-  color: var(--amber);
+.rail-btn svg {
+  width: 19px;
+  height: 19px;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
-.mark-sub {
+.rail-btn:hover,
+.rail-btn.is-on {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.07), rgba(255, 255, 255, 0.02));
+  color: var(--paper);
+  box-shadow: var(--lift);
+}
+
+/* A job is running behind a closed drawer. */
+.rail-btn.is-live {
+  color: var(--live);
+}
+
+.rail-dot {
+  position: absolute;
+  top: 7px;
+  right: 13px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--live);
+}
+
+.rail-spacer {
+  flex: 1;
+}
+
+/* The shuffle bag, drawn as what it is: a column that empties as the library
+   is played through, and refills only once everything has had its turn. */
+.bag {
+  display: grid;
+  justify-items: center;
+  gap: 6px;
+  width: 60px;
+  color: var(--faint);
+}
+
+.bag-key {
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.bag-count {
+  font-family: var(--data);
   font-size: 10px;
-  letter-spacing: 0.24em;
-  font-weight: 400;
-  color: var(--dim);
 }
 
-.readouts {
-  display: flex;
-  align-items: center;
-  gap: 20px;
+.bag-tube {
+  position: relative;
+  width: 5px;
+  height: 52px;
+  border-radius: 3px;
+  background: var(--edge-soft);
   overflow: hidden;
 }
 
-.readout {
-  display: flex;
-  align-items: baseline;
-  gap: 7px;
-  white-space: nowrap;
+.bag-fill {
+  position: absolute;
+  inset: auto 0 0 0;
+  background: var(--live);
+  opacity: 0.55;
+  transition:
+    height 400ms ease,
+    background 220ms linear;
 }
 
-.readout-key {
-  font-size: 10px;
-  letter-spacing: 0.18em;
-  text-transform: uppercase;
-  color: var(--dim);
+/* --- main ----------------------------------------------------------------- */
+
+.main {
+  grid-area: main;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
 }
 
-.readout-val {
-  font-size: 12px;
-  color: var(--bright);
-}
+/* --- stage ---------------------------------------------------------------- */
 
-.readout-val.is-live {
-  color: var(--amber);
-}
-
+/* One column, not two. The spectrum is not a instrument sitting beside the
+   title — it is the floor the title stands on. */
 .stage {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 372px;
-  min-height: 0;
+  max-width: var(--content-max);
+  gap: 14px;
+  padding: 20px var(--pad) 0;
+  border-bottom: 1px solid var(--edge-soft);
 }
-
-.deck {
-  display: grid;
-  grid-template-rows: clamp(104px, 20%, 156px) minmax(0, 1fr);
-  min-height: 0;
-  border-right: 1px solid var(--rule);
-}
-
-/* --- visualiser ----------------------------------------------------------- */
-
-.viz {
-  position: relative;
-  border-bottom: 1px solid var(--rule);
-  background: radial-gradient(120% 140% at 50% 100%, #0d0f10 0%, var(--void) 70%);
-  overflow: hidden;
-}
-
-.viz-canvas {
-  display: block;
-  width: 100%;
-  height: 100%;
-}
-
-.viz-tag {
-  position: absolute;
-  left: var(--pad);
-  top: 14px;
-  font-size: 10px;
-  letter-spacing: 0.18em;
-  text-transform: uppercase;
-  color: var(--dim);
-}
-
-/* --- now playing ---------------------------------------------------------- */
 
 .now {
-  display: flex;
-  flex-direction: column;
-  gap: 18px;
-  padding: 24px var(--pad) 20px;
-  min-height: 0;
-  overflow: auto;
+  min-width: 0;
 }
 
 .now-eyebrow {
   display: flex;
   align-items: center;
   gap: 10px;
+  margin-bottom: 10px;
   font-size: 10px;
-  letter-spacing: 0.2em;
+  font-weight: 600;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
-  color: var(--dim);
+  color: var(--faint);
 }
 
+/* Which deck is carrying the track. Not decoration: it is the key to the
+   colour the whole interface is currently wearing. */
 .now-deck {
-  color: var(--amber);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--live);
+  transition: color 220ms linear;
+}
+
+.now-deck::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--live);
+  transition: background 220ms linear;
 }
 
 .now-title {
   margin: 0;
-  font-size: clamp(22px, 3.2vw, 34px);
-  line-height: 1.08;
+  font-family: var(--display);
+  font-weight: 800;
+  font-size: clamp(30px, 4.4vw, 52px);
+  line-height: 1.02;
   letter-spacing: -0.015em;
+  color: var(--paper);
+  /* Two lines, then ellipsis. Generated titles are short and YouTube titles
+     are not; the stage must not change height when one follows the other. */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* Longer titles step down and get a third line, so a sentence-length YouTube
+   title is read rather than truncated. */
+.now-title.is-long {
+  font-size: clamp(24px, 3vw, 34px);
+  line-height: 1.08;
+  -webkit-line-clamp: 3;
+}
+
+.now-title.is-tiny {
+  font-size: clamp(19px, 2.2vw, 25px);
   font-weight: 700;
-  color: var(--bright);
-  text-transform: uppercase;
-  overflow-wrap: anywhere;
+  line-height: 1.14;
+  letter-spacing: -0.005em;
+  -webkit-line-clamp: 3;
 }
 
 .now-title.is-idle {
-  font-size: 16px;
-  line-height: 1.4;
-  color: var(--dim);
-  font-weight: 400;
-  text-transform: none;
-  letter-spacing: 0;
+  font-size: clamp(19px, 2.2vw, 26px);
+  font-weight: 600;
+  color: var(--faint);
 }
 
 .now-meta {
   display: flex;
   flex-wrap: wrap;
-  gap: 0;
-  border: 1px solid var(--rule);
-  border-radius: 2px;
-  overflow: hidden;
+  align-items: baseline;
+  gap: 4px 18px;
+  margin-top: 14px;
 }
 
 .meta-cell {
-  flex: 1 1 88px;
-  padding: 9px 12px;
-  border-right: 1px solid var(--rule);
-  background: var(--panel);
-}
-
-.meta-cell:last-child {
-  border-right: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
 }
 
 .meta-key {
-  display: block;
-  font-size: 9px;
-  letter-spacing: 0.18em;
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
   text-transform: uppercase;
-  color: var(--dim);
+  color: var(--faint);
 }
 
 .meta-val {
-  display: block;
-  margin-top: 2px;
-  font-size: 14px;
-  color: var(--bright);
+  font-family: var(--data);
+  font-size: 12px;
+  color: var(--text);
 }
 
 .meta-val.is-accent {
-  color: var(--amber);
+  color: var(--paper);
 }
 
-/* The prompt is the only artwork a generated track has, so it gets the room a
-   sleeve would get. */
 .prompt {
-  border-left: 2px solid var(--amber-line);
-  padding: 2px 0 2px 14px;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-top: 14px;
+  min-width: 0;
 }
 
 .prompt-key {
-  font-size: 9px;
-  letter-spacing: 0.18em;
+  flex: none;
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
   text-transform: uppercase;
-  color: var(--dim);
+  color: var(--faint);
 }
 
 .prompt-tags {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 8px;
+  gap: 5px;
+  max-height: 48px;
+  overflow: hidden;
 }
 
 .tag {
-  padding: 3px 8px;
-  border: 1px solid var(--rule);
-  border-radius: 2px;
-  background: var(--panel);
-  font-size: 11px;
-  color: var(--text);
+  padding: 2px 8px;
+  border: 1px solid var(--edge);
+  border-radius: 20px;
+  font-size: 10.5px;
+  color: var(--mute);
+  white-space: nowrap;
 }
 
-.scrub {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  margin-top: auto;
-  padding-top: 6px;
+/* --- visualiser panel ----------------------------------------------------- */
+
+/* No box: no border, no panel colour, no radius. The bars rise straight out of
+   the stage background and are masked away at the top, so the spectrum fades
+   into the page instead of ending at an edge. */
+.deck {
+  position: relative;
+  height: 72px;
+  overflow: hidden;
+  /* Only the last stretch fades. At 55% the mask was eating the top of every
+     tall column — exactly the lit edge that gives the bank its depth. */
+  -webkit-mask-image: linear-gradient(to top, #000 78%, transparent);
+  mask-image: linear-gradient(to top, #000 78%, transparent);
 }
 
-.scrub-time {
-  font-size: 11px;
-  color: var(--dim);
-  min-width: 40px;
-}
-
-.scrub-time.is-elapsed {
-  color: var(--amber);
-  text-align: right;
-}
-
-/* --- range inputs --------------------------------------------------------- */
-
-.range {
-  -webkit-appearance: none;
-  appearance: none;
-  flex: 1;
-  height: 18px;
-  background: transparent;
-  cursor: pointer;
-}
-
-.range::-webkit-slider-runnable-track {
-  height: 2px;
-  background: var(--rule);
-}
-
-.range::-moz-range-track {
-  height: 2px;
-  background: var(--rule);
-}
-
-.range::-webkit-slider-thumb {
-  -webkit-appearance: none;
-  appearance: none;
-  width: 3px;
-  height: 16px;
-  margin-top: -7px;
-  background: var(--amber);
-  border: 0;
-  border-radius: 0;
-}
-
-.range::-moz-range-thumb {
-  width: 3px;
-  height: 16px;
-  background: var(--amber);
-  border: 0;
-  border-radius: 0;
-}
-
-.range:disabled {
-  cursor: default;
-  opacity: 0.4;
-}
-
-.range.is-short {
-  flex: 0 0 96px;
+.viz,
+.viz-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
 }
 
 /* --- library -------------------------------------------------------------- */
@@ -377,70 +458,113 @@ body::after {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
   min-height: 0;
-  background: var(--panel);
 }
 
 .lib-head {
   display: flex;
-  align-items: baseline;
+  max-width: var(--content-max);
+  align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  padding: 14px 16px;
-  border-bottom: 1px solid var(--rule);
+  gap: 14px;
+  padding: 14px var(--pad) 10px;
 }
 
-.lib-title {
-  font-size: 10px;
-  letter-spacing: 0.2em;
-  text-transform: uppercase;
-  color: var(--bright);
+.tabs {
+  display: flex;
+  gap: 4px;
+}
+
+.tab {
+  padding: 5px 12px;
+  border: 0;
+  border-radius: 20px;
+  background: transparent;
+  color: var(--mute);
+  font-family: var(--ui);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition:
+    background 120ms ease,
+    color 120ms ease;
+}
+
+.tab:hover {
+  color: var(--paper);
+}
+
+.tab.is-on {
+  background: linear-gradient(180deg, #262e3b, #1c222c);
+  color: var(--paper);
+  box-shadow:
+    var(--lift),
+    var(--drop);
+}
+
+.tab-count {
+  margin-left: 6px;
+  font-family: var(--data);
+  font-size: 10.5px;
+  color: var(--faint);
 }
 
 .lib-count {
+  font-family: var(--data);
   font-size: 11px;
-  color: var(--dim);
+  color: var(--faint);
 }
 
 .lib-list {
+  max-width: var(--content-max);
+  min-height: 0;
   overflow-y: auto;
-  overscroll-behavior: contain;
+  padding: 0 var(--pad) 16px;
 }
 
-/* The row is a container, not the control: the clickable area is `.row-main`
-   inside it, so per-row tools can sit alongside without nesting buttons. */
 .row {
   display: flex;
-  align-items: stretch;
-  width: 100%;
-  border: 0;
-  border-bottom: 1px solid var(--rule);
-  border-left: 2px solid transparent;
-  background: transparent;
-  color: inherit;
-  font: inherit;
-  text-align: left;
+  align-items: center;
+  border-radius: 8px;
 }
 
 .row:hover {
-  background: var(--raise);
+  background: var(--slab);
 }
 
-.row.is-current {
-  border-left-color: var(--amber);
-  background: var(--amber-wash);
+/* Fixed columns, not `auto`. Every row is its own grid, so `auto` sizes each
+   one to its own content and the numbers down the right-hand side stop lining
+   up with each other. */
+.row-main {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) 68px 52px 46px 16px;
+  align-items: center;
+  gap: 16px;
+  flex: 1;
+  min-width: 0;
+  padding: 8px 12px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-family: var(--ui);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
 }
 
-.row.is-buried {
-  opacity: 0.4;
+.row-bpm,
+.row-key {
+  text-align: right;
+}
+
+.row-time {
+  text-align: right;
 }
 
 .row-index {
-  font-size: 10px;
-  color: var(--dim);
-}
-
-.row.is-current .row-index {
-  color: var(--amber);
+  position: relative;
+  font-family: var(--data);
+  font-size: 10.5px;
+  color: var(--faint);
 }
 
 .row-title {
@@ -450,255 +574,631 @@ body::after {
   color: var(--text);
 }
 
-.row.is-current .row-title {
-  color: var(--bright);
+.row-bpm,
+.row-key,
+.row-uploader,
+.row-time {
+  font-family: var(--data);
+  font-size: 11px;
+  color: var(--faint);
 }
 
-.row-bpm,
-.row-key {
-  font-size: 11px;
-  color: var(--dim);
-  text-align: right;
+.row-uploader {
+  max-width: 190px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .row-mark {
-  font-size: 11px;
+  font-size: 12px;
+  color: var(--faint);
   text-align: center;
-  color: var(--dim);
 }
 
 .row-mark.is-up {
-  color: var(--amber);
+  color: var(--paper);
 }
 
-/* --- dock (transport) ----------------------------------------------------- */
+/* The row that is sounding. Its marker is the colour the deck is wearing, so
+   the list agrees with the stage without repeating the deck letter. */
+.row.is-current {
+  background:
+    linear-gradient(90deg, rgba(var(--live-rgb), 0.1), rgba(var(--live-rgb), 0) 34%),
+    linear-gradient(180deg, #232a36, #1b212c);
+  box-shadow: var(--lift);
+}
+
+.row.is-current .row-title {
+  color: var(--paper);
+  font-weight: 500;
+}
+
+.row.is-current .row-index {
+  color: transparent;
+}
+
+.row.is-current .row-index::after {
+  content: "";
+  position: absolute;
+  inset: 50% auto auto 0;
+  width: 3px;
+  height: 15px;
+  transform: translateY(-50%);
+  border-radius: 2px;
+  background: var(--live);
+  box-shadow: 0 0 10px rgba(var(--live-rgb), 0.75);
+  transition: background 220ms linear;
+}
+
+.row.is-buried {
+  opacity: 0.4;
+}
+
+.row-tools {
+  padding-right: 8px;
+}
+
+.icon {
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--edge);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--mute);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.icon:hover {
+  border-color: var(--live);
+  color: var(--paper);
+}
+
+/* --- dock ----------------------------------------------------------------- */
 
 .dock {
+  grid-area: dock;
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
-  gap: 24px;
+  gap: 22px;
   padding: 0 var(--pad);
-  border-top: 1px solid var(--rule);
-  background: var(--panel);
+  background: linear-gradient(180deg, rgba(30, 36, 47, 0.82), rgba(18, 22, 30, 0.92));
+  border-top: 1px solid var(--edge-soft);
+  box-shadow:
+    var(--lift),
+    0 -12px 30px rgba(0, 0, 0, 0.35);
 }
 
 .dock-group {
   display: flex;
   align-items: center;
+  gap: 10px;
+}
+
+.dock-label {
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+
+/* The play control is the only filled thing in the interface, because it is
+   the only one anyone should have to find without looking. */
+.play {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  border: 0;
+  border-radius: 50%;
+  background: linear-gradient(180deg, #ffffff, #ccd5e1);
+  color: var(--ink);
+  cursor: pointer;
+  box-shadow:
+    0 2px 5px rgba(0, 0, 0, 0.5),
+    0 8px 22px rgba(0, 0, 0, 0.35);
+  transition:
+    transform 120ms ease,
+    box-shadow 120ms ease;
+}
+
+.play:hover:not(:disabled) {
+  box-shadow:
+    0 2px 5px rgba(0, 0, 0, 0.5),
+    0 10px 28px rgba(0, 0, 0, 0.45);
+}
+
+.play:hover:not(:disabled) {
+  transform: scale(1.06);
+}
+
+.play:disabled {
+  background: var(--edge);
+  color: var(--faint);
+  cursor: default;
+}
+
+.play svg {
+  width: 16px;
+  height: 16px;
+  fill: currentColor;
+  stroke: none;
+}
+
+.step {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--mute);
+  cursor: pointer;
+}
+
+.step:hover:not(:disabled) {
+  color: var(--paper);
+}
+
+.step:disabled {
+  color: var(--faint);
+  cursor: default;
+}
+
+.step svg {
+  width: 15px;
+  height: 15px;
+  fill: currentColor;
+  stroke: none;
+}
+
+/* --- scrub ---------------------------------------------------------------- */
+
+.scrub {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
   gap: 12px;
 }
 
-.btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 40px;
-  height: 34px;
-  padding: 0 12px;
-  border: 1px solid var(--rule);
-  border-radius: 2px;
-  background: var(--raise);
-  color: var(--text);
-  font: inherit;
-  font-size: 12px;
-  letter-spacing: 0.08em;
+.scrub-time {
+  font-family: var(--data);
+  font-size: 11px;
+  color: var(--faint);
+  min-width: 42px;
+}
+
+.scrub-time.is-elapsed {
+  color: var(--mute);
+  text-align: right;
+}
+
+/* The handover, drawn where it actually matters.
+
+   `--incoming` is transparent except during a crossfade, when App sets it to
+   the arriving deck's colour and widens `.scrub-incoming` with the fade's
+   progress. The bar then shows what is playing and what is arriving at once,
+   with no second widget needed to explain it. */
+.scrub-rail {
+  position: relative;
+  height: 4px;
+  border-radius: 3px;
+  background: #12161e;
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.6);
+}
+
+.scrub-played {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: 3px;
+  background: var(--live);
+  box-shadow: 0 0 8px rgba(var(--live-rgb), 0.5);
+  transition: background 220ms linear;
+}
+
+.scrub-incoming {
+  position: absolute;
+  inset: 0 0 0 auto;
+  border-radius: 3px;
+  background: var(--incoming, transparent);
+  opacity: 0.9;
+}
+
+.scrub-head {
+  position: absolute;
+  top: 50%;
+  width: 11px;
+  height: 11px;
+  margin-left: -5.5px;
+  border-radius: 50%;
+  background: var(--paper);
+  transform: translateY(-50%) scale(0);
+  transition: transform 120ms ease;
+  pointer-events: none;
+}
+
+.scrub-rail:hover .scrub-head,
+.scrub-input:focus-visible ~ .scrub-head {
+  transform: translateY(-50%) scale(1);
+}
+
+/* The real input sits invisibly over the rail, so the control keeps its
+   keyboard behaviour and its accessible name while the bar above carries the
+   appearance. */
+.scrub-input {
+  position: absolute;
+  inset: -9px 0;
+  width: 100%;
+  height: 22px;
+  margin: 0;
+  opacity: 0;
   cursor: pointer;
-  transition: border-color 120ms ease, color 120ms ease;
+}
+
+.scrub-input:disabled {
+  cursor: default;
+}
+
+/* --- next up -------------------------------------------------------------- */
+
+.next {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  max-width: 250px;
+  font-size: 11.5px;
+  color: var(--faint);
+}
+
+.next-key {
+  flex: none;
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.next-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--mute);
+}
+
+.next.is-fading .next-title {
+  color: var(--incoming, var(--paper));
+}
+
+/* --- ranges --------------------------------------------------------------- */
+
+.range {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 4px;
+  border-radius: 3px;
+  background: var(--edge-soft);
+  cursor: pointer;
+}
+
+.range.is-short {
+  width: 84px;
+}
+
+/* A slider next to its readout, rather than a full-width bar with the number
+   orphaned on the line below. */
+.gp-slider {
+  align-items: center;
+  gap: 14px;
+}
+
+.range.is-wide {
+  width: 260px;
+}
+
+.range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 11px;
+  height: 11px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--paper);
+}
+
+.range::-moz-range-thumb {
+  width: 11px;
+  height: 11px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--paper);
+}
+
+.range:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* --- buttons and fields --------------------------------------------------- */
+
+.btn {
+  padding: 7px 14px;
+  border: 1px solid var(--edge);
+  border-radius: 7px;
+  background:
+    var(--sheen),
+    linear-gradient(180deg, #232a36, #1a202a);
+  box-shadow:
+    var(--lift),
+    var(--drop);
+  color: var(--mute);
+  font-family: var(--ui);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition:
+    border-color 120ms ease,
+    color 120ms ease;
 }
 
 .btn:hover:not(:disabled) {
-  border-color: var(--rule-warm);
-  color: var(--bright);
+  border-color: var(--live);
+  color: var(--paper);
 }
 
 .btn:disabled {
-  opacity: 0.35;
+  opacity: 0.4;
   cursor: default;
 }
 
 .btn.is-primary {
-  min-width: 76px;
-  border-color: var(--amber-line);
-  color: var(--amber);
+  border-color: transparent;
+  background: linear-gradient(180deg, #ffffff, #d9e0ea);
+  color: var(--ink);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.45);
 }
 
 .btn.is-primary:hover:not(:disabled) {
-  background: var(--amber);
-  color: var(--amber-ink);
-  border-color: var(--amber);
+  color: var(--ink);
 }
 
 .btn.is-on {
-  border-color: var(--amber);
-  color: var(--amber);
+  border-color: var(--live);
+  color: var(--live);
 }
 
+.input,
 .select {
-  height: 34px;
-  padding: 0 10px;
-  border: 1px solid var(--rule);
-  border-radius: 2px;
-  background: var(--raise);
-  color: var(--text);
-  font: inherit;
+  padding: 7px 10px;
+  border: 1px solid var(--edge);
+  border-radius: 7px;
+  background: linear-gradient(180deg, #161b24, #1b212b);
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.45);
+  color: var(--paper);
+  font-family: var(--ui);
   font-size: 12px;
+}
+
+.input.is-block,
+.input.is-wide {
+  width: 100%;
+}
+
+.input.is-area {
+  min-height: 92px;
+  line-height: 1.5;
+  resize: vertical;
+}
+
+.input.is-tight {
+  width: 74px;
+}
+
+.input:focus,
+.select:focus {
+  outline: none;
+  border-color: var(--live);
+}
+
+/* Native select chrome is the one thing in here that would announce which
+   toolkit drew the window, so it is replaced with a drawn caret. */
+.select {
+  -webkit-appearance: none;
+  appearance: none;
+  padding-right: 26px;
+  background-image: linear-gradient(45deg, transparent 50%, var(--mute) 50%),
+    linear-gradient(135deg, var(--mute) 50%, transparent 50%);
+  background-position:
+    calc(100% - 14px) calc(50% + 1px),
+    calc(100% - 9px) calc(50% + 1px);
+  background-size: 5px 5px;
+  background-repeat: no-repeat;
   cursor: pointer;
 }
 
-.dock-label {
-  font-size: 10px;
-  letter-spacing: 0.18em;
-  text-transform: uppercase;
-  color: var(--dim);
+.select option {
+  background: var(--raise);
+  color: var(--paper);
 }
 
-/* Signature: the handover meter. Two hairlines tracking the equal-power curve
-   of a live crossfade, so the 8 seconds where both decks are audible are
-   visible rather than implied. */
-.handover {
-  display: grid;
-  grid-template-columns: 30px minmax(0, 1fr);
-  align-items: center;
-  gap: 10px;
-  min-width: 0;
+/* Native checkboxes are fine once they stop being system-blue. */
+input[type="checkbox"],
+input[type="radio"] {
+  width: 14px;
+  height: 14px;
+  accent-color: var(--live);
+  cursor: pointer;
 }
 
-.handover-key {
-  font-size: 10px;
-  letter-spacing: 0.14em;
-  color: var(--dim);
-}
-
-.handover-key.is-live {
-  color: var(--amber);
-}
-
-.handover-bars {
-  display: grid;
-  gap: 3px;
-  min-width: 0;
-}
-
-.handover-track {
-  position: relative;
-  height: 2px;
-  background: var(--rule);
-}
-
-.handover-fill {
-  position: absolute;
-  inset: 0 auto 0 0;
-  background: var(--amber);
-}
-
-.handover-fill.is-quiet {
-  background: var(--dim);
-}
-
-.handover-caption {
-  grid-column: 2;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 10px;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: var(--dim);
-}
-
-/* --- empty + notice ------------------------------------------------------- */
+/* --- empty state ---------------------------------------------------------- */
 
 .empty {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  justify-content: center;
-  gap: 16px;
-  height: 100%;
-  padding: 0 clamp(24px, 8vw, 96px);
+  grid-row: 1 / -1;
+  display: grid;
+  align-content: center;
+  justify-items: start;
+  max-width: 640px;
+  padding: var(--pad);
+  margin: 0 auto;
 }
 
 .empty-key {
   font-size: 10px;
-  letter-spacing: 0.2em;
+  font-weight: 600;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
-  color: var(--amber);
+  color: var(--live);
 }
 
 .empty-title {
-  margin: 0;
-  font-size: 24px;
-  font-weight: 700;
-  letter-spacing: -0.01em;
-  color: var(--bright);
+  margin: 6px 0 10px;
+  font-family: var(--display);
+  font-weight: 800;
+  font-size: clamp(30px, 4vw, 46px);
+  line-height: 1.05;
+  letter-spacing: -0.015em;
+  color: var(--paper);
 }
 
 .empty-body {
-  margin: 0;
-  max-width: 56ch;
+  margin: 0 0 20px;
   color: var(--text);
+  line-height: 1.65;
+}
+
+.empty-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 22px;
 }
 
 .empty-cmd {
-  padding: 12px 16px;
-  border: 1px solid var(--rule);
-  border-left: 2px solid var(--amber);
-  background: var(--panel);
-  color: var(--bright);
-  font-size: 13px;
+  padding: 10px 14px;
+  border: 1px solid var(--edge-soft);
+  border-radius: 8px;
+  background: var(--slab);
+  font-family: var(--data);
+  font-size: 12px;
+  color: var(--mute);
   user-select: text;
 }
 
 .empty-path {
+  margin-top: 12px;
+  font-family: var(--data);
   font-size: 11px;
-  color: var(--dim);
-  user-select: text;
-  overflow-wrap: anywhere;
+  color: var(--faint);
 }
+
+/* --- drop target ---------------------------------------------------------- */
+
+/* Shown only while files are genuinely over the window. Dragging music in is a
+   real way to fill the library, so it gets a real answer rather than a cursor
+   change nobody notices. */
+.drop-veil {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 10px;
+  background: rgba(10, 12, 17, 0.88);
+  pointer-events: none;
+}
+
+.drop-ring {
+  display: grid;
+  place-items: center;
+  width: 88px;
+  height: 88px;
+  border: 2px dashed var(--live);
+  border-radius: 24px;
+  color: var(--live);
+}
+
+.drop-ring svg {
+  width: 30px;
+  height: 30px;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.drop-title {
+  font-family: var(--display);
+  font-weight: 700;
+  font-size: 24px;
+  color: var(--paper);
+}
+
+.drop-body {
+  font-size: 12.5px;
+  color: var(--mute);
+}
+
+/* --- notice --------------------------------------------------------------- */
 
 .notice {
   position: fixed;
-  left: var(--pad);
-  bottom: calc(var(--dock-h) + 14px);
-  z-index: 90;
+  left: 50%;
+  bottom: calc(var(--dock-h) + 16px);
+  z-index: 70;
   display: flex;
   align-items: center;
-  gap: 12px;
-  max-width: 60ch;
-  padding: 9px 12px;
-  border: 1px solid var(--rule-warm);
-  border-left: 2px solid var(--amber);
-  background: var(--raise);
-  color: var(--text);
-  font-size: 12px;
+  gap: 14px;
+  max-width: 640px;
+  padding: 11px 14px;
+  transform: translateX(-50%);
+  border: 1px solid var(--edge);
+  border-radius: 9px;
+  background: linear-gradient(180deg, #232a36, #1a1f29);
+  color: var(--paper);
+  font-size: 12.5px;
+  box-shadow:
+    var(--lift),
+    0 16px 44px rgba(0, 0, 0, 0.6);
 }
 
 .notice-close {
+  flex: none;
   border: 0;
-  background: none;
-  color: var(--dim);
-  font: inherit;
+  background: transparent;
+  color: var(--mute);
+  font-family: var(--ui);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
   cursor: pointer;
 }
 
 .notice-close:hover {
-  color: var(--amber);
+  color: var(--paper);
 }
 
-/* --- generator drawer ----------------------------------------------------- */
+/* --- drawers -------------------------------------------------------------- */
 
-/* A drawer, not a modal: a 24 h run is something you glance at while the music
-   keeps playing, so the deck stays visible and audible behind it. */
-
+/* The generator and the importer slide up over the library. Both stay mounted
+   while shut — their jobs keep running with the drawer closed and the window in
+   the tray — so "closed" is a transform and a pointer-events switch rather than
+   an unmount. */
 .gp-scrim {
   position: fixed;
   inset: 0;
-  z-index: 80;
-  background: rgba(8, 9, 10, 0.72);
+  z-index: 45;
+  background: rgba(6, 8, 12, 0.6);
   opacity: 0;
   pointer-events: none;
-  transition: opacity 160ms ease;
+  transition: opacity 180ms ease;
 }
 
 .gp-scrim.is-open {
@@ -706,691 +1206,331 @@ body::after {
   pointer-events: auto;
 }
 
+/* Stops above the dock rather than covering it: these are long jobs, and the
+   music has to stay controllable while one is being set up. */
 .genpanel {
   position: fixed;
-  top: 0;
-  right: 0;
-  bottom: 0;
-  z-index: 81;
-  display: grid;
-  grid-template-rows: var(--rail-h) minmax(0, 1fr);
-  width: min(440px, 92vw);
-  border-left: 1px solid var(--rule-warm);
-  background: var(--panel);
-  transform: translateX(100%);
-  transition: transform 180ms ease;
+  inset: auto 0 var(--dock-h) 0;
+  z-index: 50;
+  max-height: min(74vh, 620px);
+  padding: 20px var(--pad) 24px;
+  background: linear-gradient(180deg, #1c222d, #14181f);
+  border-top: 1px solid var(--edge);
+  border-radius: 14px 14px 0 0;
+  box-shadow:
+    var(--lift-strong),
+    0 -24px 70px rgba(0, 0, 0, 0.6);
+  overflow-y: auto;
+  transform: translateY(101%);
+  visibility: hidden;
+  transition:
+    transform 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    visibility 0s linear 220ms;
 }
 
 .genpanel.is-open {
-  transform: translateX(0);
+  transform: translateY(0);
+  visibility: visible;
+  transition:
+    transform 260ms cubic-bezier(0.22, 1, 0.36, 1),
+    visibility 0s;
 }
 
 .gp-head {
   display: flex;
-  align-items: center;
+  align-items: baseline;
   justify-content: space-between;
-  padding: 0 16px;
-  border-bottom: 1px solid var(--rule);
+  gap: 14px;
+  margin-bottom: 16px;
 }
 
 .gp-title {
-  font-size: 10px;
-  letter-spacing: 0.22em;
-  text-transform: uppercase;
-  color: var(--bright);
+  margin: 0;
+  font-family: var(--display);
   font-weight: 700;
+  font-size: 22px;
+  letter-spacing: -0.01em;
+  color: var(--paper);
 }
 
 .gp-close {
-  padding: 4px 6px;
   border: 0;
-  background: none;
-  color: var(--dim);
-  font: inherit;
-  font-size: 18px;
-  line-height: 1;
+  background: transparent;
+  color: var(--mute);
+  font-family: var(--ui);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
   cursor: pointer;
 }
 
 .gp-close:hover {
-  color: var(--amber);
+  color: var(--paper);
 }
 
 .gp-body {
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  padding: 4px 16px 20px;
+  display: grid;
+  gap: 14px;
 }
 
-.gp-section {
-  padding: 14px 0;
-  border-bottom: 1px solid var(--rule);
-}
-
-.gp-section-key {
-  margin: 0 0 10px;
-  font-size: 9px;
-  font-weight: 400;
-  letter-spacing: 0.22em;
-  text-transform: uppercase;
-  color: var(--dim);
-}
-
-.gp-engine {
-  display: flex;
+/* The download folder, on one line with its label. A section of its own pushed
+   the queue — the part of this drawer anyone actually watches — off the bottom. */
+.gp-dest {
+  flex-wrap: nowrap;
   align-items: baseline;
-  gap: 9px;
-  min-width: 0;
+  gap: 10px;
 }
 
-/* One lamp, three readings: dark = nothing there, pulsing = coming up,
-   steady = serving. No second colour required. */
-.gp-dot {
-  flex: 0 0 auto;
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--dim);
-}
-
-.gp-dot.is-starting {
-  background: var(--amber);
-  animation: gp-pulse 1.1s ease-in-out infinite;
-}
-
-.gp-dot.is-online {
-  background: var(--amber);
-  box-shadow: 0 0 6px var(--amber-line);
-}
-
-@keyframes gp-pulse {
-  0%,
-  100% {
-    opacity: 0.25;
-  }
-  50% {
-    opacity: 1;
-  }
-}
-
-.gp-state {
-  font-size: 12px;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-  color: var(--bright);
-}
-
-.gp-detail {
+/* Plain left-to-right truncation. `direction: rtl` would keep the useful tail
+   of a long path visible, but it also reorders punctuation — an apostrophe or a
+   trailing bracket ends up on the wrong side — and a path that reads wrong is
+   worse than one that is cut short. The full value is on the title attribute. */
+.gp-path.is-grow,
+.input.is-grow {
   flex: 1;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 11px;
-  color: var(--dim);
+}
+
+.input.is-grow {
+  font-family: var(--data);
+  font-size: 11.5px;
+}
+
+.gp-section {
+  display: grid;
+  gap: 8px;
+}
+
+.gp-section-key,
+.gp-stat-key,
+.gp-preset-note {
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+
+.gp-preset-note {
+  grid-column: 1 / -1;
+}
+
+.gp-preset-value {
+  font-family: var(--data);
+  font-size: 15px;
+  color: var(--paper);
+}
+
+.gp-preset-unit {
+  font-size: 12px;
 }
 
 .gp-row {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 12px;
-}
-
-.gp-note {
-  margin: 10px 0 0;
-  font-size: 11px;
-  line-height: 1.5;
-  color: var(--dim);
-  user-select: text;
-  overflow-wrap: anywhere;
-}
-
-.gp-note.is-warn {
-  padding-left: 10px;
-  border-left: 2px solid var(--amber);
-  color: var(--text);
-}
-
-.gp-presets {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 6px;
-}
-
-.gp-preset {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  padding: 10px 8px;
-  border: 1px solid var(--rule);
-  border-radius: 2px;
-  background: var(--raise);
-  color: var(--text);
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-  transition: border-color 120ms ease;
-}
-
-.gp-preset:hover:not(:disabled) {
-  border-color: var(--rule-warm);
-}
-
-.gp-preset.is-on {
-  border-color: var(--amber-line);
-  background: var(--amber-wash);
-}
-
-.gp-preset:disabled {
-  opacity: 0.35;
-  cursor: default;
-}
-
-.gp-preset-value {
-  font-size: 18px;
-  line-height: 1.1;
-  color: var(--bright);
-}
-
-.gp-preset.is-on .gp-preset-value {
-  color: var(--amber);
-}
-
-.gp-preset-unit {
-  font-size: 9px;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-  color: var(--dim);
-}
-
-.gp-preset-note {
-  margin-top: 4px;
-  font-size: 9px;
-  color: var(--dim);
-}
-
-.gp-bar {
-  height: 3px;
-  background: var(--rule);
-}
-
-.gp-bar-fill {
-  height: 100%;
-  background: var(--dim);
-  transition: width 300ms ease;
-}
-
-.gp-bar-fill.is-live {
-  background: var(--amber);
+  align-items: center;
+  gap: 10px;
 }
 
 .gp-stats {
   display: flex;
   flex-wrap: wrap;
-  gap: 0;
-  margin-top: 12px;
-  border: 1px solid var(--rule);
-  border-radius: 2px;
-  overflow: hidden;
+  gap: 22px;
 }
 
 .gp-stat {
-  flex: 1 1 62px;
-  padding: 7px 10px;
-  border-right: 1px solid var(--rule);
-  background: var(--void);
-}
-
-.gp-stat:last-child {
-  border-right: 0;
-}
-
-.gp-stat-key {
-  display: block;
-  font-size: 9px;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-  color: var(--dim);
-}
-
-.gp-stat-val {
-  display: block;
-  margin-top: 2px;
-  font-size: 13px;
-  color: var(--bright);
-}
-
-.gp-stat-val.is-live {
-  color: var(--amber);
-}
-
-.gp-line {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  margin: 12px 0 0;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 11px;
-  color: var(--text);
-}
-
-.gp-genre {
-  flex: 0 0 auto;
-  padding: 2px 7px;
-  border: 1px solid var(--amber-line);
-  border-radius: 2px;
-  font-size: 10px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--amber);
-}
-
-.gp-log {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  height: 132px;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  padding: 8px 10px;
-  border: 1px solid var(--rule);
-  background: var(--void);
-  font-size: 11px;
-  line-height: 1.5;
-  color: var(--dim);
-  user-select: text;
-}
-
-.gp-log-line {
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-
-.gp-log-line.is-err {
-  color: var(--text);
-}
-
-.gp-log-empty {
-  opacity: 0.6;
-}
-
-.gp-path {
-  margin: 14px 0 0;
-  font-size: 10px;
-  color: var(--dim);
-  user-select: text;
-  overflow-wrap: anywhere;
-}
-
-/* The rail's toggle. Its dot is the only thing in the header that moves, so a
-   run in progress is legible from across the room with the drawer shut. */
-.rail-action {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  height: 26px;
-  padding: 0 11px;
-  border: 1px solid var(--rule);
-  border-radius: 2px;
-  background: var(--raise);
-  color: var(--text);
-  font: inherit;
-  font-size: 10px;
-  letter-spacing: 0.18em;
-  text-transform: uppercase;
-  cursor: pointer;
-  transition: border-color 120ms ease, color 120ms ease;
-}
-
-.rail-action:hover {
-  border-color: var(--rule-warm);
-  color: var(--bright);
-}
-
-.rail-action.is-live {
-  border-color: var(--amber-line);
-  color: var(--amber);
-}
-
-.rail-action-dot {
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: var(--amber);
-  animation: gp-pulse 1.1s ease-in-out infinite;
-}
-
-/* --- side panel tabs, playlists, downloads --------------------------------- */
-
-/* No new colours: amber still means "live", everything else is greyscale. */
-
-.tabs {
-  display: flex;
+  display: grid;
   gap: 2px;
 }
 
-.tab {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 3px 8px;
-  border: 0;
-  border-bottom: 1px solid transparent;
-  background: none;
-  color: var(--dim);
-  font: inherit;
-  font-size: 10px;
-  letter-spacing: 0.2em;
-  text-transform: uppercase;
-  cursor: pointer;
+.gp-state,
+.gp-preset-value,
+.gp-detail,
+.gp-genre,
+.gp-path,
+.gp-note,
+.gp-line,
+.gp-log-empty,
+.gp-preset-unit {
+  font-family: var(--data);
+  font-size: 11.5px;
+  color: var(--mute);
 }
 
-.tab:hover {
+.gp-path,
+.gp-note,
+.gp-log-empty {
+  color: var(--faint);
+}
+
+.gp-engine {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
   color: var(--text);
 }
 
-.tab.is-on {
-  border-bottom-color: var(--amber);
-  color: var(--bright);
-}
-
-.tab-count {
-  padding: 0 4px;
-  border: 1px solid var(--rule);
-  border-radius: 2px;
-  font-size: 9px;
-  letter-spacing: 0;
-  color: var(--dim);
-}
-
-.tab.is-on .tab-count {
-  border-color: var(--amber-line);
-  color: var(--amber);
-}
-
-.pl-body {
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
+.gp-bar {
+  height: 4px;
+  border-radius: 3px;
+  background: var(--edge-soft);
   overflow: hidden;
 }
 
-.pl-controls {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 12px 16px;
-  border-bottom: 1px solid var(--rule);
+.gp-bar-fill {
+  height: 100%;
+  border-radius: 3px;
+  background: var(--live);
+  transition:
+    width 300ms ease,
+    background 220ms linear;
 }
 
-.pl-actions {
+.gp-stat-val {
+  font-family: var(--data);
+  font-size: 13px;
+  color: var(--paper);
+}
+
+/* Engine state. The dot is the only place in the interface where colour means
+   something other than "this is the deck playing", so it is deliberately not
+   the accent: green for up, ember for down. */
+.gp-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--faint);
+}
+
+.gp-dot.is-online {
+  background: #4ade80;
+}
+
+.gp-dot.is-offline,
+.gp-dot.is-unavailable {
+  background: var(--deck-a);
+}
+
+.gp-dot.is-starting {
+  background: var(--deck-b);
+}
+
+/* Value and unit on one line — "10 tracks", not "10" above "tracks" — with the
+   estimate under it. */
+.gp-preset {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 4px;
-}
-
-.pl-name {
-  display: flex;
-  gap: 6px;
-}
-
-.input {
-  flex: 1;
-  min-width: 0;
-  height: 30px;
-  padding: 0 9px;
-  border: 1px solid var(--rule);
-  border-radius: 2px;
-  background: var(--void);
-  color: var(--bright);
-  font: inherit;
-  font-size: 12px;
-  user-select: text;
-}
-
-.input:focus {
-  border-color: var(--amber-line);
-  outline: none;
-}
-
-.input::placeholder {
-  color: var(--dim);
-}
-
-.input.is-area {
-  width: 100%;
-  height: auto;
-  padding: 9px;
-  line-height: 1.5;
-  resize: vertical;
-}
-
-.input:disabled {
-  opacity: 0.4;
-  cursor: default;
-}
-
-.btn.is-tight {
-  min-width: 0;
-  height: 28px;
-  padding: 0 6px;
-  font-size: 10px;
-  letter-spacing: 0.04em;
-}
-
-.btn.is-block {
-  width: 100%;
-}
-
-.select.is-wide {
-  width: 100%;
-  min-width: 0;
-}
-
-.pl-hint {
-  margin: 0;
-  padding: 16px;
-  font-size: 11px;
-  line-height: 1.6;
-  color: var(--dim);
-}
-
-.pl-meta {
-  display: flex;
+  grid-template-columns: auto auto;
+  justify-content: start;
   align-items: baseline;
-  justify-content: space-between;
-  gap: 10px;
-  padding: 8px 16px;
-  border-bottom: 1px solid var(--rule);
-  font-size: 10px;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: var(--dim);
-}
-
-.pl-meta-key.is-live {
-  color: var(--amber);
-}
-
-.row-main {
-  display: grid;
-  grid-template-columns: 34px minmax(0, 1fr) auto 22px;
-  align-items: center;
-  gap: 8px;
-  flex: 1;
-  min-width: 0;
-  padding: 7px 16px;
-  border: 0;
+  gap: 0 5px;
+  padding: 8px 12px;
+  border: 1px solid var(--edge);
+  border-radius: 8px;
   background: transparent;
-  color: inherit;
-  font: inherit;
+  color: var(--mute);
+  font-family: var(--ui);
   text-align: left;
   cursor: pointer;
+  transition:
+    border-color 120ms ease,
+    color 120ms ease;
 }
 
-/* The library keeps the generator's two fixed readouts; an imported row has
-   neither, so its channel name spans both columns instead. */
-.row-main.is-lib {
-  grid-template-columns: 34px minmax(0, 1fr) 46px 52px 22px;
+.gp-preset:hover {
+  border-color: var(--live);
+  color: var(--paper);
 }
 
-/* Tools take the right-hand padding over, so the button stops short of them. */
-.row.is-pl .row-main {
-  padding-right: 4px;
+.gp-preset.is-on {
+  border-color: var(--live);
+  color: var(--paper);
 }
 
-.row-main:disabled {
-  cursor: default;
-  opacity: 0.5;
-}
-
-.row-stack {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-}
-
-.row-sub,
-.row-uploader {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 10px;
-  color: var(--dim);
-}
-
-.row-uploader {
-  grid-column: span 2;
-  text-align: right;
-}
-
-.row.is-current .row-sub,
-.row.is-current .row-uploader {
-  color: var(--text);
-}
-
-.row-warn {
-  color: var(--amber);
-}
-
-.row-time {
+.gp-log-line {
+  font-family: var(--data);
   font-size: 11px;
-  color: var(--dim);
-  text-align: right;
+  color: var(--mute);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.gp-log-line.is-err,
+.gp-line.is-err {
+  color: var(--deck-a);
+}
+
+.pl-meta-key {
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--faint);
 }
 
 .row.is-missing .row-title {
-  text-decoration: line-through;
-  color: var(--dim);
-}
-
-.row-tools {
-  display: flex;
-  align-items: center;
-  gap: 1px;
-  padding-right: 10px;
-}
-
-.icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 20px;
-  height: 20px;
-  padding: 0;
-  border: 0;
-  border-radius: 2px;
-  background: none;
-  color: var(--dim);
-  font: inherit;
-  font-size: 12px;
-  line-height: 1;
-  cursor: pointer;
-}
-
-.icon:hover:not(:disabled) {
-  background: var(--raise);
-  color: var(--amber);
-}
-
-.icon:disabled {
-  opacity: 0.25;
-  cursor: default;
+  color: var(--deck-a);
 }
 
 .gp-check {
   display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  margin-top: 10px;
-  font-size: 11px;
-  line-height: 1.5;
-  color: var(--dim);
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  color: var(--text);
   cursor: pointer;
 }
 
-.gp-check input {
-  margin: 2px 0 0;
-  accent-color: var(--amber);
-}
-
-.gp-check code {
-  color: var(--text);
-}
-
-.dl-report {
-  margin-top: 10px;
-  padding-left: 10px;
-  border-left: 2px solid var(--rule-warm);
-}
-
-.dl-report-line {
+.gp-presets {
   display: flex;
-  flex-direction: column;
-  margin: 6px 0 0;
-  font-size: 10px;
-  overflow-wrap: anywhere;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
-.dl-report-input {
-  color: var(--text);
+.gp-log {
+  max-height: 180px;
+  padding: 10px 12px;
+  border: 1px solid var(--edge-soft);
+  border-radius: 8px;
+  background: var(--ink);
+  overflow-y: auto;
+  font-family: var(--data);
+  font-size: 11px;
+  line-height: 1.6;
+  user-select: text;
 }
 
-.dl-report-reason {
-  color: var(--dim);
+.gp-line.is-warn {
+  color: var(--deck-a);
 }
+
+/* --- download list -------------------------------------------------------- */
 
 .dl-list {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
+  display: grid;
+  gap: 6px;
 }
 
 .dl-job {
-  padding: 9px 10px;
-  border: 1px solid var(--rule);
-  border-left: 2px solid var(--rule);
-  border-radius: 2px;
-  background: var(--void);
+  display: grid;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--edge-soft);
+  border-radius: 8px;
+  background: var(--ink);
 }
 
-.dl-job.is-running {
-  border-left-color: var(--amber);
+/* Only the two outcomes worth reacting to are marked. A finished download
+   needs no colour — the row it made is already in the library. */
+.dl-job.is-failed {
+  border-color: rgba(255, 107, 61, 0.45);
 }
 
-.dl-job.is-done {
-  border-left-color: var(--rule-warm);
-}
-
-/* Failed and cancelled read as "spent", not as an alarm — the detail line
-   carries the reason and there is no second colour to spend on it. */
-.dl-job.is-failed,
-.dl-job.is-cancelled,
-.dl-job.is-skipped {
+.dl-job.is-cancelled {
   opacity: 0.6;
 }
 
@@ -1398,82 +1538,173 @@ body::after {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 12px;
+}
+
+.dl-job-actions {
+  display: flex;
+  align-items: center;
   gap: 8px;
-  margin-bottom: 7px;
-  min-width: 0;
+  flex: none;
+}
+
+.dl-job-phase {
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.dl-job.is-failed .dl-job-phase {
+  color: var(--deck-a);
+}
+
+.btn.is-small {
+  padding: 3px 10px;
+  font-size: 11px;
 }
 
 .dl-job-title {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 12px;
-  color: var(--bright);
+  font-size: 12.5px;
+  color: var(--paper);
 }
 
-.dl-job-phase {
-  flex: 0 0 auto;
-  font-size: 9px;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-  color: var(--dim);
-}
-
+.dl-job-pct,
+.dl-job-phase,
 .dl-job-detail {
-  display: flex;
-  gap: 7px;
-  margin: 7px 0 0;
-  font-size: 10px;
-  line-height: 1.5;
-  color: var(--dim);
-  overflow-wrap: anywhere;
+  font-family: var(--data);
+  font-size: 11px;
+  color: var(--faint);
 }
 
-.dl-job-pct {
-  flex: 0 0 auto;
-  color: var(--amber);
+.dl-report {
+  display: grid;
+  gap: 4px;
+  margin-top: 10px;
 }
 
-.empty-row {
+.dl-report-line {
+  font-size: 12px;
+  color: var(--text);
+}
+
+.dl-report-reason,
+.dl-report-input {
+  font-family: var(--data);
+  font-size: 11px;
+  color: var(--faint);
+  word-break: break-all;
+}
+
+/* --- playlists ------------------------------------------------------------ */
+
+.pl-body {
+  display: grid;
+  max-width: var(--content-max);
+  align-content: start;
+  gap: 10px;
+  min-height: 0;
+  padding: 0 var(--pad) 16px;
+  overflow-y: auto;
+}
+
+.pl-controls,
+.pl-actions {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.pl-name {
+  font-family: var(--display);
+  font-weight: 700;
+  font-size: 17px;
+  color: var(--paper);
+}
+
+.pl-meta,
+.pl-hint {
+  font-family: var(--data);
+  font-size: 11px;
+  color: var(--faint);
+}
+
+.row-stack {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+}
+
+.row-sub {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--data);
+  font-size: 10.5px;
+  color: var(--faint);
+}
+
+.row-warn {
+  font-family: var(--data);
+  font-size: 10.5px;
+  color: var(--deck-a);
+}
+
+/* --- scrollbars ----------------------------------------------------------- */
+
+::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  border: 3px solid transparent;
+  border-radius: 6px;
+  background-clip: content-box;
+  background-color: var(--edge);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background-color: var(--faint);
+}
+
+/* --- narrow --------------------------------------------------------------- */
+
+@media (max-width: 940px) {
+  .deck {
+    height: 56px;
+  }
+
+  .next {
+    display: none;
+  }
+}
+
+/* --- library tools -------------------------------------------------------- */
+
+.lib-tools {
+  display: flex;
+  align-items: center;
   gap: 10px;
 }
 
-/* --- responsive ----------------------------------------------------------- */
-
-@media (max-width: 940px) {
-  .stage {
-    grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: minmax(0, 1fr) 240px;
-  }
-
-  .deck {
-    border-right: 0;
-    border-bottom: 1px solid var(--rule);
-  }
-
-  .dock {
-    grid-template-columns: auto minmax(0, 1fr);
-    gap: 14px;
-  }
-
-  .dock-meters {
-    display: none;
-  }
-
-  .gp-presets {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .pl-actions {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
+.lib-tools .icon svg {
+  width: 13px;
+  height: 13px;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 1.9;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
-@media (prefers-reduced-motion: reduce) {
-  * {
-    transition-duration: 0.01ms !important;
-    animation-duration: 0.01ms !important;
-  }
+.icon:disabled {
+  opacity: 0.4;
+  cursor: default;
 }

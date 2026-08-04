@@ -1,13 +1,15 @@
 import type { PanelView } from "./PanelTabs";
 import { PanelTabs } from "./PanelTabs";
 import type { Track } from "../types";
-import { isImported } from "../types";
-import { key } from "../format";
+import { SOURCE_LABEL, isGenerated, meaningfulGenre } from "../types";
+import { clock, key } from "../format";
 
 interface Props {
   view: PanelView;
   onView: (view: PanelView) => void;
   playlistCount: number;
+  onRefresh: () => void;
+  refreshing: boolean;
   tracks: Track[];
   currentId: number | null;
   queuedId: number | null;
@@ -18,14 +20,29 @@ interface Props {
 }
 
 export function LibraryPanel(props: Props) {
-  const { view, onView, playlistCount, tracks, currentId, queuedId, onPlay, addTarget, onAdd } =
+  const { view, onView, playlistCount, onRefresh, refreshing, tracks, currentId, queuedId, onPlay, addTarget, onAdd } =
     props;
 
   return (
     <aside className="aside" aria-label="Library">
       <header className="lib-head">
         <PanelTabs view={view} onView={onView} playlistCount={playlistCount} />
-        <span className="lib-count">{tracks.length} ready</span>
+        <div className="lib-tools">
+          <span className="lib-count">{tracks.length} ready</span>
+          <button
+            type="button"
+            className="icon"
+            onClick={onRefresh}
+            disabled={refreshing}
+            title="Re-read the library and drop tracks whose files have gone"
+            aria-label="Refresh the library"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M20 12a8 8 0 1 1-2.34-5.66" />
+              <path d="M20 4v4.5h-4.5" />
+            </svg>
+          </button>
+        </div>
       </header>
 
       <div className="lib-list">
@@ -44,18 +61,18 @@ export function LibraryPanel(props: Props) {
                 aria-current={track.id === currentId}
                 title={track.title}
               >
-                <span className="row-index">{String(index + 1).padStart(3, "0")}</span>
-                <span className="row-title">{track.title}</span>
-                {/* An import has no tempo or key, so the channel takes both
-                    columns rather than showing two dashes. */}
-                {isImported(track) ? (
-                  <span className="row-uploader">{track.uploader ?? "YouTube"}</span>
-                ) : (
-                  <>
-                    <span className="row-bpm">{track.bpm}</span>
-                    <span className="row-key">{key(track.keyScale)}</span>
-                  </>
-                )}
+                <span className="row-index">{String(index + 1).padStart(2, "0")}</span>
+                <span className="row-stack">
+                  <span className="row-title">{track.title}</span>
+                  <span className="row-sub">{subtitle(track)}</span>
+                </span>
+                {/* Both cells are always emitted, empty if the row has nothing
+                    for them. Each row is its own grid, so a cell left out
+                    entirely would shift every column after it out of line with
+                    the row above. */}
+                <span className="row-bpm">{isGenerated(track) ? `${track.bpm} BPM` : ""}</span>
+                <span className="row-key">{isGenerated(track) ? key(track.keyScale) : ""}</span>
+                <span className="row-time">{clock(track.duration ?? 0)}</span>
                 <span className={track.rating === 1 ? "row-mark is-up" : "row-mark"}>
                   {marker(track, queuedId)}
                 </span>
@@ -79,6 +96,20 @@ export function LibraryPanel(props: Props) {
       </div>
     </aside>
   );
+}
+
+/**
+ * The line under the title: who to credit, and where the audio came from.
+ *
+ * A generated row has no artist, so it shows the genre it was rendered for —
+ * which is the closest thing it has to one.
+ */
+function subtitle(track: Track): string {
+  if (isGenerated(track)) return meaningfulGenre(track) ?? SOURCE_LABEL.generated;
+  // Artist or channel, then where it came from — and the genre only when it is
+  // not just the source repeating itself.
+  const parts = [track.uploader, meaningfulGenre(track), SOURCE_LABEL[track.source]];
+  return parts.filter((part): part is string => part !== null && part !== "").join(" · ");
 }
 
 /** Mirrors the schema's rating values rather than inventing new symbols. */

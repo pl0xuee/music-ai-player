@@ -113,7 +113,12 @@ export function GenerationPanel({ open, onClose, pending, onLibraryChanged, onRu
   }, [onLibraryChanged, run.phase, run.running]);
 
   useEffect(() => {
-    if (open) logEndRef.current?.scrollIntoView({ block: "end" });
+    if (!open) return;
+    // Scroll the console, not the page. `scrollIntoView` walks up and scrolls
+    // every scrollable ancestor, which here means the drawer itself — opening
+    // it with any log at all would jump straight past its own header.
+    const box = logEndRef.current?.parentElement;
+    if (box !== null && box !== undefined) box.scrollTop = box.scrollHeight;
   }, [log, open]);
 
   useEffect(() => {

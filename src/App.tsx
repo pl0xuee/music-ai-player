@@ -2,19 +2,23 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { GenerationPanel } from "./components/GenerationPanel";
 import { LibraryPanel } from "./components/LibraryPanel";
+import { LocalPanel } from "./components/LocalPanel";
+import { CROSSFADE_KEY, SettingsPanel } from "./components/SettingsPanel";
 import { NowPlaying } from "./components/NowPlaying";
 import { PlaylistPanel } from "./components/PlaylistPanel";
 import type { PanelView } from "./components/PanelTabs";
+import { Rail } from "./components/Rail";
 import { Transport } from "./components/Transport";
 import { Visualizer } from "./components/Visualizer";
 import { YouTubePanel } from "./components/YouTubePanel";
 
-import { Player } from "./audio/player";
+import { CROSSFADE_SECONDS, Player } from "./audio/player";
 import type { DeckId, PlayerCrossfade } from "./audio/player";
 import { ShuffleBag } from "./audio/shuffle";
 
 import {
   EVENTS,
+  IN_TAURI,
   addToPlaylist,
   clearPlaylist,
   createPlaylist,
@@ -26,16 +30,20 @@ import {
   listTracks,
   markPlayed,
   mediaKeyStatus,
+  onFileDrop,
   onTransport,
+  pruneMissing,
   rateTrack,
   removeItem,
   renamePlaylist,
   reorderItem,
+  scanLocal,
   trackSourceUrl,
 } from "./api";
 import { EMPTY_STATS, IDLE_RUN } from "./types";
 import type { GenerationProgress, Playlist, PlaylistItem, Stats, Track } from "./types";
-import { span } from "./format";
+import { deckColour, liveColour } from "./deck-colour";
+import { devPanel } from "./dev-fixtures";
 
 export default function App() {
   const bagRef = useRef<ShuffleBag | null>(null);
@@ -62,9 +70,18 @@ export default function App() {
   const [bagCounts, setBagCounts] = useState({ remaining: 0, size: 0 });
   const [notice, setNotice] = useState<string | null>(null);
 
-  const [generatorOpen, setGeneratorOpen] = useState(false);
-  const [importOpen, setImportOpen] = useState(false);
+  // Outside the shell the hash can open a drawer straight away, so every
+  // surface is reachable by loading a URL. `IN_TAURI` is true in the app, in
+  // dev and in a bundled build alike, so this is inert there.
+  const [generatorOpen, setGeneratorOpen] = useState(!IN_TAURI && devPanel() === "generate");
+  const [importOpen, setImportOpen] = useState(!IN_TAURI && devPanel() === "import");
   const [downloading, setDownloading] = useState(0);
+  /** True while a folder scan is walking and probing. */
+  const [scanning, setScanning] = useState(false);
+  /** True while the library is being re-read and checked for missing files. */
+  const [refreshing, setRefreshing] = useState(false);
+  /** True while files are being held over the window. */
+  const [dropping, setDropping] = useState(false);
   const [run, setRun] = useState<GenerationProgress>(IDLE_RUN);
   // Bumped to re-run both library queries; the generator and the importer both
   // write into the same database while the player reads it, so "reload" is a
@@ -72,7 +89,9 @@ export default function App() {
   const [libraryVersion, setLibraryVersion] = useState(0);
   const reloadLibrary = useCallback(() => setLibraryVersion((version) => version + 1), []);
 
-  const [view, setView] = useState<PanelView>("library");
+  const [view, setView] = useState<PanelView>(
+    !IN_TAURI && devPanel() === "playlists" ? "playlists" : "library",
+  );
   const [playlists, setPlaylists] = useState<Playlist[]>([]);
   const [playlistId, setPlaylistId] = useState<number | null>(null);
   const [items, setItems] = useState<PlaylistItem[]>([]);
@@ -440,70 +459,138 @@ export default function App() {
     });
   }, []);
 
+  // -- local files ----------------------------------------------------------
+
+  /**
+   * Adopt whatever is under `paths`, then say what happened.
+   *
+   * The report is worth showing even when it is all good news: a scan that
+   * silently adds 300 rows to a list the user is not looking at is
+   * indistinguishable from one that did nothing.
+   */
+  const adopt = useCallback(
+    async (paths: string[]) => {
+      if (paths.length === 0) return null;
+      setScanning(true);
+      try {
+        const report = await scanLocal(paths);
+        reloadLibrary();
+        const parts: string[] = [];
+        if (report.added > 0) parts.push(`Added ${report.added}`);
+        if (report.skipped > 0) parts.push(`${report.skipped} already in the library`);
+        if (report.failed > 0) parts.push(`${report.failed} could not be read`);
+        if (report.truncated) parts.push("stopped at the 20,000-file limit");
+        setNotice(parts.length === 0 ? "No audio files there." : `${parts.join(" · ")}.`);
+        return report;
+      } catch (err) {
+        setNotice(err instanceof Error ? err.message : String(err));
+        return null;
+      } finally {
+        setScanning(false);
+      }
+    },
+    [reloadLibrary],
+  );
+
+  /**
+   * Re-read the library, dropping anything whose file has gone.
+   *
+   * Both halves matter: the generator and the importer write rows this window
+   * has not seen, and files leave without the database being told. Doing them
+   * together is what makes one button match what the user means by "refresh".
+   */
+  const handleRefresh = useCallback(() => {
+    setRefreshing(true);
+    void pruneMissing()
+      .then((report) => {
+        reloadLibrary();
+        reloadPlaylists();
+        if (report.removed > 0) {
+          setNotice(
+            `Removed ${report.removed} track${report.removed === 1 ? "" : "s"} whose file had gone.`,
+          );
+        }
+      })
+      .catch((err: unknown) => setNotice(err instanceof Error ? err.message : String(err)))
+      .finally(() => setRefreshing(false));
+  }, [reloadLibrary, reloadPlaylists]);
+
+  const [localOpen, setLocalOpen] = useState(!IN_TAURI && devPanel() === "files");
+  const [settingsOpen, setSettingsOpen] = useState(!IN_TAURI && devPanel() === "settings");
+  const [crossfade, setCrossfadeState] = useState(() => {
+    const saved = Number(window.localStorage.getItem(CROSSFADE_KEY));
+    return Number.isFinite(saved) && saved > 0 ? saved : CROSSFADE_SECONDS;
+  });
+  const handleCrossfade = useCallback((seconds: number) => {
+    setCrossfadeState(seconds);
+    window.localStorage.setItem(CROSSFADE_KEY, String(seconds));
+    playerRef.current?.setCrossfade(seconds);
+  }, []);
+
+  // Dropping music onto the window is the other half of the same feature. This
+  // is the webview's own drag-drop event, not the DOM's: a file dropped on a
+  // Tauri window never arrives as a `DragEvent`, and what this carries is real
+  // filesystem paths, which is what the scanner needs.
+  useEffect(() => {
+    return onFileDrop({
+      over: setDropping,
+      drop: (paths) => void adopt(paths),
+    });
+  }, [adopt]);
+
   // -- render ---------------------------------------------------------------
 
   const empty = loaded && library.length === 0;
 
+  // The whole visual idea, in two lines: the accent is the deck that is
+  // sounding, and across a handover it sits between the two exactly as the
+  // audio does. Everything colour-carrying in styles.css reads these.
+  const fading = fade !== null && fade.progress < 1;
+  const live = liveColour(deck, fading ? fade.progress : null);
+  const incoming = fading ? deckColour(deck === "A" ? "B" : "A").css : null;
+  const shellStyle = {
+    "--live": live.css,
+    "--live-rgb": live.rgb,
+  } as React.CSSProperties;
+
   return (
-    <div className="shell">
-      <header className="rail">
-        <div className="mark">
-          <span>
-            Music<span className="mark-slash">//</span>AI
-          </span>
-          <span className="mark-sub">Local library player</span>
-        </div>
-        <div className="readouts">
-          <Readout label="Ready" value={String(stats.ready)} live={stats.ready > 0} />
-          <Readout label="Runtime" value={span(stats.playableSeconds)} />
-          <Readout label="Queued" value={String(stats.pending + stats.generating)} />
-          <Readout label="Failed" value={String(stats.failed)} />
-          <button
-            type="button"
-            className={downloading > 0 ? "rail-action is-live" : "rail-action"}
-            onClick={() => setImportOpen((open) => !open)}
-            aria-expanded={importOpen}
-            title="Paste YouTube links"
-          >
-            {downloading > 0 && <span className="rail-action-dot" aria-hidden="true" />}
-            {downloading > 0 ? `Getting ${downloading}` : "Add URLs"}
-          </button>
-          <button
-            type="button"
-            className={run.running ? "rail-action is-live" : "rail-action"}
-            onClick={() => setGeneratorOpen((open) => !open)}
-            aria-expanded={generatorOpen}
-            title="Generate more tracks"
-          >
-            {run.running && <span className="rail-action-dot" aria-hidden="true" />}
-            {run.running && run.total > 0 ? `Gen ${run.current}/${run.total}` : "Generate"}
-          </button>
-        </div>
-      </header>
+    <div className="shell" style={shellStyle}>
+      <Rail
+        onAddLocal={() => setLocalOpen((open) => !open)}
+        onImport={() => setImportOpen((open) => !open)}
+        onGenerate={() => setGeneratorOpen((open) => !open)}
+        scanning={scanning}
+        downloading={downloading}
+        generating={run.running}
+        bagRemaining={bagCounts.remaining}
+        bagSize={bagCounts.size}
+        onSettings={() => setSettingsOpen((open) => !open)}
+      />
 
       {empty ? (
-        <EmptyLibrary
-          stats={stats}
-          onGenerate={() => setGeneratorOpen(true)}
-          onImport={() => setImportOpen(true)}
-        />
+        <main className="main">
+          <EmptyLibrary
+            stats={stats}
+            onGenerate={() => setGeneratorOpen(true)}
+            onImport={() => setImportOpen(true)}
+            onAddLocal={() => setLocalOpen(true)}
+          />
+        </main>
       ) : (
-        <main className="stage">
-          <div className="deck">
-            <Visualizer analyser={analyser} active={playing} />
-            <NowPlaying
-              track={current}
-              deck={deck}
-              position={position}
-              duration={duration}
-              onSeek={(seconds) => playerRef.current?.seek(seconds)}
-            />
+        <main className="main">
+          <div className="stage">
+            <NowPlaying track={current} deck={deck} duration={duration} />
+            <div className="deck">
+              <Visualizer analyser={analyser} active={playing} accent={live.rgb} bare />
+            </div>
           </div>
           {view === "library" ? (
             <LibraryPanel
               view={view}
               onView={setView}
               playlistCount={playlists.length}
+              onRefresh={handleRefresh}
+              refreshing={refreshing}
               tracks={visible}
               currentId={currentId}
               queuedId={queuedId}
@@ -564,9 +651,27 @@ export default function App() {
         queued={queued}
         fade={fade}
         onRate={handleRate}
-        bagRemaining={bagCounts.remaining}
-        bagSize={bagCounts.size}
+        position={position}
+        duration={duration}
+        onSeek={(seconds) => playerRef.current?.seek(seconds)}
+        incoming={incoming}
       />
+
+      {dropping && (
+        <div className="drop-veil" role="status">
+          <div className="drop-ring">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M12 16V4" />
+              <path d="M7.5 8.5 12 4l4.5 4.5" />
+              <path d="M4 15v3.5A1.5 1.5 0 0 0 5.5 20h13a1.5 1.5 0 0 0 1.5-1.5V15" />
+            </svg>
+          </div>
+          <span className="drop-title">Drop to add</span>
+          <span className="drop-body">
+            Folders are searched through; the files stay where they are.
+          </span>
+        </div>
+      )}
 
       {/* Both drawers stay mounted while closed: work started in either keeps
           going with the drawer shut and the window in the tray, and their
@@ -577,6 +682,21 @@ export default function App() {
         pending={stats.pending + stats.generating}
         onLibraryChanged={reloadLibrary}
         onRunChange={setRun}
+      />
+
+      <SettingsPanel
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        stats={stats}
+        crossfade={crossfade}
+        onCrossfade={handleCrossfade}
+      />
+
+      <LocalPanel
+        open={localOpen}
+        onClose={() => setLocalOpen(false)}
+        onScan={adopt}
+        scanning={scanning}
       />
 
       <YouTubePanel
@@ -604,35 +724,32 @@ export default function App() {
   );
 }
 
-function Readout({ label, value, live }: { label: string; value: string; live?: boolean }) {
-  return (
-    <div className="readout">
-      <span className="readout-key">{label}</span>
-      <span className={live === true ? "readout-val is-live" : "readout-val"}>{value}</span>
-    </div>
-  );
-}
-
 function EmptyLibrary({
   stats,
   onGenerate,
   onImport,
+  onAddLocal,
 }: {
   stats: Stats;
   onGenerate: () => void;
   onImport: () => void;
+  onAddLocal: () => void;
 }) {
   return (
     <section className="empty">
       <span className="empty-key">No tracks yet</span>
-      <h1 className="empty-title">The library is empty.</h1>
+      <h1 className="empty-title">Nothing to play yet.</h1>
       <p className="empty-body">
-        Two ways to fill it. Paste YouTube links and they are downloaded as mp3s into the library,
-        or run the generator and take the 10-track sample. Either way the rows appear here as they
-        land, and both play through the same decks.
+        Three ways to fill it. Point it at music already on this machine and the files stay where
+        they are, paste YouTube links to pull audio down at its original quality, or run the
+        generator and render something new on the GPU. Everything lands in the same library and
+        plays through the same two decks.
       </p>
       <div className="empty-row">
-        <button type="button" className="btn is-primary" onClick={onImport}>
+        <button type="button" className="btn is-primary" onClick={onAddLocal}>
+          Add music from a folder
+        </button>
+        <button type="button" className="btn" onClick={onImport}>
           Paste YouTube URLs
         </button>
         <button type="button" className="btn" onClick={onGenerate}>

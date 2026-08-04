@@ -20,6 +20,24 @@ interface Props {
   /** Only animate while audio is actually running. */
   active: boolean;
   /**
+   * The live deck colour as an `"r, g, b"` triple.
+   *
+   * Canvas cannot read CSS custom properties, so the value the rest of the UI
+   * gets from `--live-rgb` has to be handed over explicitly. It moves from one
+   * deck's colour to the other's across a handover, which is the one thing this
+   * interface is built around.
+   */
+  accent?: string;
+  /**
+   * Strip the instrument chrome: no graticule, no corner brackets, no frequency
+   * ruler, no readouts, no grain — just the spectrum.
+   *
+   * Those belong to a rack unit, and the panel wearing them read as a widget
+   * bolted onto the app rather than part of it. Bare, the spectrum can sit
+   * directly on the stage and be the shape of the music instead of a gauge.
+   */
+  bare?: boolean;
+  /**
    * Fires on every detected kick. Optional — every kick is also broadcast on
    * the module-level bus (`subscribeKick` / `useKick`), so nothing has to be
    * threaded through App to react to the beat.
@@ -32,8 +50,9 @@ interface Props {
    so these are kept in sync by hand. Fully neutral: brightness alone signals
    activity, matching the metal theme where colour is reserved for lamps. */
 
-// Illuminated-readout grey, matched to the metal theme (--bright/#e8edf1
-// family). Was hardcoded amber; the theme could not reach it from CSS.
+// Fallback only. The live colour arrives on the `accent` prop and follows the
+// deck that is playing; this is what the panel paints itself in before the
+// first track, and if a caller leaves the prop off.
 const READOUT = "205, 214, 220";
 const RULE = "#14171a";
 const RULE_INNER = "rgba(20, 23, 26, 0.72)";
@@ -58,6 +77,12 @@ const PEAK_FALL_PER_S = 0.75;
 const PULSE_DECAY_S = 0.17;
 /** Peak-level readout decay, in dB terms; slow so the number stays readable. */
 const METER_DECAY_S = 0.8;
+
+/**
+ * Exponent on the bar height. Above 1 it stretches the loud end and compresses
+ * the quiet one, which is what gives the spectrum its dynamics.
+ */
+const SPECTRUM_CONTRAST = 1.45;
 
 /** Target column pitch in CSS px. 5 px reads as an instrument, not a toy. */
 const COLUMN_PITCH = 5;
@@ -93,6 +118,8 @@ interface View {
   peaks: Float32Array;
   holds: Float32Array;
   gradient: CanvasGradient;
+  /** The `"r, g, b"` this view's gradient and paint calls were built for. */
+  accent: string;
   charAdv: number;
 }
 
@@ -109,15 +136,19 @@ interface View {
  * off screen, and again once the display has settled after playback stops —
  * this is background music, it must not cost anything while the user works.
  */
-export function Visualizer({ analyser, active, onKick }: Props) {
+export function Visualizer({ analyser, active, accent, bare = false, onKick }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const controlRef = useRef<{ setActive: (value: boolean) => void } | null>(null);
   const activeRef = useRef(active);
   const onKickRef = useRef(onKick);
+  const accentRef = useRef(accent ?? READOUT);
+  const bareRef = useRef(bare);
 
   useEffect(() => {
     activeRef.current = active;
     onKickRef.current = onKick;
+    accentRef.current = accent ?? READOUT;
+    bareRef.current = bare;
   });
 
   useEffect(() => {
@@ -174,15 +205,17 @@ export function Visualizer({ analyser, active, onKick }: Props) {
     let view: View | null = null;
 
     const buildView = (w: number, h: number): View => {
-      const padX = 20;
+      const stripped = bareRef.current;
+      // Edge to edge with no chrome to inset from.
+      const padX = stripped ? 0 : 20;
       const innerW = Math.max(1, w - padX * 2);
 
-      const headH = Math.min(26, h * 0.24);
-      const rulerH = Math.min(15, h * 0.13);
+      const headH = stripped ? 0 : Math.min(26, h * 0.24);
+      const rulerH = stripped ? 0 : Math.min(15, h * 0.13);
       const bodyH = Math.max(12, h - headH - rulerH);
 
-      const scopeH = Math.max(6, Math.round(bodyH * 0.3));
-      const gap = Math.max(3, Math.round(bodyH * 0.06));
+      const scopeH = stripped ? 0 : Math.max(6, Math.round(bodyH * 0.3));
+      const gap = stripped ? 0 : Math.max(3, Math.round(bodyH * 0.06));
       const specH = Math.max(6, bodyH - scopeH - gap);
 
       const scopeTop = headH;
@@ -201,10 +234,8 @@ export function Visualizer({ analyser, active, onKick }: Props) {
       for (let i = 0; i < count; i += 1) columnX[i] = Math.round(padX + i * bandW);
       const barW = Math.max(1, Math.round(bandW) - 2);
 
-      const gradient = ctx.createLinearGradient(0, specTop, 0, specBottom);
-      gradient.addColorStop(0, `rgba(${READOUT}, 1)`);
-      gradient.addColorStop(0.5, `rgba(${READOUT}, 0.82)`);
-      gradient.addColorStop(1, `rgba(${READOUT}, 0.3)`);
+      const accent = accentRef.current;
+      const gradient = spectrumGradient(ctx, specTop, specBottom, accent);
 
       ctx.font = `${LABEL_PX}px ${FONT}`;
       const charAdv = ctx.measureText("0").width + TRACKING;
@@ -233,6 +264,7 @@ export function Visualizer({ analyser, active, onKick }: Props) {
         peaks: new Float32Array(count),
         holds: new Float32Array(count),
         gradient,
+        accent,
         charAdv,
       };
     };
@@ -264,6 +296,14 @@ export function Visualizer({ analyser, active, onKick }: Props) {
     const drawFrame = (now: number): void => {
       const v = view;
       if (v === null) return;
+
+      // The deck colour moves continuously through a handover, so it is picked
+      // up here rather than at build time. Only the gradient has to be rebuilt;
+      // the rest of the view is layout and does not care about colour.
+      if (v.accent !== accentRef.current) {
+        v.accent = accentRef.current;
+        v.gradient = spectrumGradient(ctx, v.specTop, v.specBottom, v.accent);
+      }
 
       const dt = lastTime === 0 ? 1 / 60 : Math.min(0.1, (now - lastTime) / 1000);
       lastTime = now;
@@ -330,14 +370,17 @@ export function Visualizer({ analyser, active, onKick }: Props) {
       /* paint ------------------------------------------------------------ */
 
       ctx.clearRect(0, 0, v.w, v.h);
-      paintGraticule(ctx, v);
+      const stripped = bareRef.current;
+      if (!stripped) paintGraticule(ctx, v);
       if (pulse > 0.03) paintBloom(ctx, v, pulse);
-      paintScope(ctx, v, time);
+      if (!stripped) paintScope(ctx, v, time);
       paintSpectrum(ctx, v);
       paintBaseline(ctx, v, pulse);
-      paintBrackets(ctx, v, pulse);
-      paintHead(ctx, v, { live, pulse, bpm: detector.bpm, peak: meterPeak });
-      if (grain !== null) paintGrain(ctx, canvas, grain);
+      if (!stripped) {
+        paintBrackets(ctx, v, pulse);
+        paintHead(ctx, v, { live, pulse, bpm: detector.bpm, peak: meterPeak });
+        if (grain !== null) paintGrain(ctx, canvas, grain);
+      }
 
       /* park once the display has settled ------------------------------- */
 
@@ -443,10 +486,15 @@ export function Visualizer({ analyser, active, onKick }: Props) {
   return (
     <section className="viz" aria-label="Audio visualiser">
       <canvas ref={canvasRef} className="viz-canvas" />
-      <span className="viz-tag">
-        Spectrum <span className="viz-tag-slash">//</span>{" "}
-        {active ? "log 30 Hz – 16 kHz" : "standby"}
-      </span>
+      {/* Short on purpose. The canvas draws PK / BPM / KICK along the same
+          baseline from the right, and a longer label here runs straight into
+          them on a narrow panel. Gone entirely when bare — the stage says what
+          is playing, and the spectrum does not need to label itself. */}
+      {!bare && (
+        <span className="viz-tag">
+          Spectrum <span className="viz-tag-slash">//</span> {active ? "live" : "standby"}
+        </span>
+      )}
     </section>
   );
 }
@@ -458,6 +506,26 @@ export function Visualizer({ analyser, active, onKick }: Props) {
  * every label in the rest of the UI is tracked out. Drawing per glyph keeps the
  * readouts speaking in the same voice as the CSS.
  */
+/**
+ * Column gradient: bright at the cap, falling away toward the baseline.
+ *
+ * Split out because it is the only part of the view that depends on colour, so
+ * a handover can rebuild this alone rather than re-deriving the whole layout
+ * sixty times a second.
+ */
+function spectrumGradient(
+  ctx: CanvasRenderingContext2D,
+  top: number,
+  bottom: number,
+  accent: string,
+): CanvasGradient {
+  const gradient = ctx.createLinearGradient(0, top, 0, bottom);
+  gradient.addColorStop(0, `rgba(${accent}, 1)`);
+  gradient.addColorStop(0.45, `rgba(${accent}, 0.72)`);
+  gradient.addColorStop(1, `rgba(${accent}, 0.16)`);
+  return gradient;
+}
+
 function tracked(ctx: CanvasRenderingContext2D, text: string, x: number, y: number, adv: number): void {
   let cx = x;
   for (const ch of text) {
@@ -518,8 +586,8 @@ function paintBloom(ctx: CanvasRenderingContext2D, v: View, pulse: number): void
   const cx = v.padX + v.innerW * 0.07;
   const r = Math.max(24, v.specH * 1.9);
   const bloom = ctx.createRadialGradient(cx, v.specBottom, 0, cx, v.specBottom, r);
-  bloom.addColorStop(0, `rgba(${READOUT}, ${(0.11 * pulse).toFixed(4)})`);
-  bloom.addColorStop(1, `rgba(${READOUT}, 0)`);
+  bloom.addColorStop(0, `rgba(${v.accent}, ${(0.11 * pulse).toFixed(4)})`);
+  bloom.addColorStop(1, `rgba(${v.accent}, 0)`);
   ctx.fillStyle = bloom;
   ctx.fillRect(v.padX, v.specTop - v.specH, v.innerW, v.specH * 2 + 8);
 }
@@ -532,7 +600,7 @@ function paintScope(ctx: CanvasRenderingContext2D, v: View, time: Uint8Array): v
   const step = time.length / columns;
   const scale = v.scopeHalf - 1;
 
-  ctx.fillStyle = `rgba(${READOUT}, 0.5)`;
+  ctx.fillStyle = `rgba(${v.accent}, 0.5)`;
   ctx.beginPath();
   for (let c = 0; c < columns; c += 1) {
     const from = Math.floor(c * step);
@@ -554,34 +622,66 @@ function paintScope(ctx: CanvasRenderingContext2D, v: View, time: Uint8Array): v
 function paintSpectrum(ctx: CanvasRenderingContext2D, v: View): void {
   const base = Math.round(v.specBottom);
 
+  // Bodies, with a rounded top where the engine offers one — a square column
+  // of flat colour is the thing that reads as a bar chart rather than as sound.
+  const rounded = typeof ctx.roundRect === "function";
+  const radius = Math.min(v.barW / 2, 2.5);
   ctx.fillStyle = v.gradient;
   ctx.beginPath();
   for (let i = 0; i < v.plan.count; i += 1) {
-    const h = Math.max(1, Math.round((v.levels[i] ?? 0) * v.specH));
-    ctx.rect(v.columnX[i] ?? 0, base - h, v.barW, h);
+    const h = Math.max(1, Math.round(shaped(v.levels[i] ?? 0) * v.specH));
+    const x = v.columnX[i] ?? 0;
+    if (rounded && h > radius * 2) ctx.roundRect(x, base - h, v.barW, h, [radius, radius, 0, 0]);
+    else ctx.rect(x, base - h, v.barW, h);
+  }
+  ctx.fill();
+
+  // A lit top edge on every column. This is what gives the bank depth: the eye
+  // reads the bright line as the surface catching light and the body below it
+  // as falling away, so the bars stop looking like flat paint.
+  ctx.fillStyle = "rgba(255, 255, 255, 0.34)";
+  ctx.beginPath();
+  for (let i = 0; i < v.plan.count; i += 1) {
+    const h = Math.max(1, Math.round(shaped(v.levels[i] ?? 0) * v.specH));
+    if (h < 3) continue;
+    ctx.rect(v.columnX[i] ?? 0, base - h, v.barW, 1.5);
   }
   ctx.fill();
 
   // Peak-hold caps. The column shows now; the cap shows the last second.
-  ctx.fillStyle = `rgba(${READOUT}, 0.7)`;
+  ctx.fillStyle = `rgba(${v.accent}, 0.4)`;
   ctx.beginPath();
   let any = false;
   for (let i = 0; i < v.plan.count; i += 1) {
     const peak = v.peaks[i] ?? 0;
     if (peak <= 0.012) continue;
     any = true;
-    ctx.rect(v.columnX[i] ?? 0, base - Math.round(peak * v.specH) - 1, v.barW, 1);
+    // Same curve as the columns, or the caps would float above bars they are
+    // supposed to be the high-water mark of.
+    ctx.rect(v.columnX[i] ?? 0, base - Math.round(shaped(peak) * v.specH) - 1, v.barW, 1);
   }
   if (any) ctx.fill();
+}
+
+/**
+ * Bar height from a 0..1 level, with the quiet end pushed down.
+ *
+ * A linear mapping spends most of the panel on the middle of the range, where
+ * nearly all programme material sits, so the bars move as one slab. Raising the
+ * level to a power steepens the top: a hit reads as a hit instead of as one
+ * more column at the ceiling.
+ */
+function shaped(level: number): number {
+  return level <= 0 ? 0 : Math.pow(level, SPECTRUM_CONTRAST);
 }
 
 function paintBaseline(ctx: CanvasRenderingContext2D, v: View, pulse: number): void {
   ctx.fillStyle = RULE;
   ctx.fillRect(v.padX, Math.round(v.specBottom), v.innerW, 1);
   if (pulse <= 0.01) return;
-  ctx.fillStyle = `rgba(${READOUT}, ${(0.6 * pulse).toFixed(4)})`;
+  ctx.fillStyle = `rgba(${v.accent}, ${(0.6 * pulse).toFixed(4)})`;
   ctx.fillRect(v.padX, Math.round(v.specBottom), v.innerW, 1);
-  ctx.fillStyle = `rgba(${READOUT}, ${(0.12 * pulse).toFixed(4)})`;
+  ctx.fillStyle = `rgba(${v.accent}, ${(0.12 * pulse).toFixed(4)})`;
   ctx.fillRect(v.padX, Math.round(v.specBottom) + 1, v.innerW, 2);
 }
 
@@ -607,7 +707,7 @@ function paintBrackets(ctx: CanvasRenderingContext2D, v: View, pulse: number): v
   };
 
   draw(RULE_UNLIT, arm);
-  if (pulse > 0.01) draw(`rgba(${READOUT}, ${(0.55 * pulse).toFixed(4)})`, arm);
+  if (pulse > 0.01) draw(`rgba(${v.accent}, ${(0.55 * pulse).toFixed(4)})`, arm);
 }
 
 interface HeadState {
@@ -631,9 +731,9 @@ function paintHead(ctx: CanvasRenderingContext2D, v: View, state: HeadState): vo
   const groupX = v.w - v.padX - (lampSize + 5 + trackedWidth("KICK", charAdv));
 
   ctx.fillStyle =
-    state.pulse > 0.01 ? `rgba(${READOUT}, ${(0.2 + 0.8 * state.pulse).toFixed(4)})` : RULE_UNLIT;
+    state.pulse > 0.01 ? `rgba(${v.accent}, ${(0.2 + 0.8 * state.pulse).toFixed(4)})` : RULE_UNLIT;
   ctx.fillRect(groupX, lampY, lampSize, lampSize);
-  ctx.fillStyle = state.pulse > 0.35 ? `rgba(${READOUT}, 0.9)` : DIM;
+  ctx.fillStyle = state.pulse > 0.35 ? `rgba(${v.accent}, 0.9)` : DIM;
   tracked(ctx, "KICK", groupX + lampSize + 5, y, charAdv);
 
   // Tempo, inferred from the kick intervals — `~` because it is measured off
@@ -641,14 +741,14 @@ function paintHead(ctx: CanvasRenderingContext2D, v: View, state: HeadState): vo
   const bpmText = state.bpm === null ? "BPM ---" : `BPM ~${Math.round(state.bpm)}`;
   const bpmW = trackedWidth(bpmText, charAdv);
   let x = groupX - gutter - bpmW;
-  ctx.fillStyle = state.bpm === null || !state.live ? DIM : `rgba(${READOUT}, 0.85)`;
+  ctx.fillStyle = state.bpm === null || !state.live ? DIM : `rgba(${v.accent}, 0.85)`;
   tracked(ctx, bpmText, x, y, charAdv);
 
   // Peak level, held and decayed so the number can actually be read.
   const db = state.peak > 0.001 ? Math.max(-60, 20 * Math.log10(state.peak)) : null;
   const dbText = db === null ? "PK  --.-" : `PK ${db > -9.95 ? " " : ""}${db.toFixed(1)}`;
   x -= gutter + trackedWidth(dbText, charAdv);
-  ctx.fillStyle = db !== null && db > -1.5 ? `rgba(${READOUT}, 0.85)` : DIM;
+  ctx.fillStyle = db !== null && db > -1.5 ? `rgba(${v.accent}, 0.85)` : DIM;
   tracked(ctx, dbText, x, y, charAdv);
 }
 
