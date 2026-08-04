@@ -21,8 +21,13 @@ pub const EV_PLAY_PAUSE: &str = "transport:play-pause";
 pub const EV_NEXT: &str = "transport:next";
 /// Restart the current track, or step back if it just started. Payload: none.
 pub const EV_PREVIOUS: &str = "transport:previous";
-/// Fired when the window is hidden or shown so the UI can pause work it does
-/// not need to do while invisible.
+/// Fired when the window is hidden or shown. Payload: `bool`, true for visible.
+///
+/// Emitted on tray show/hide and on close-to-tray. It is an offer, not a
+/// contract: nothing in the backend changes behaviour with visibility and
+/// nothing here requires a listener, so a UI that ignores it entirely is fully
+/// functional. If a listener is ever added, this is the signal to hang
+/// "pause the work that only matters while the window is on screen" off.
 pub const EV_VISIBILITY: &str = "window:visibility";
 
 const MAIN_WINDOW: &str = "main";

@@ -35,7 +35,9 @@ use crate::library::{
     Library,
 };
 use crate::proc::signals as proc;
-use crate::proc::{pump, slot, strip_ansi, terminate, wait_for_exit, Proc, Slot, Spawner};
+use crate::proc::{
+    pump, slot, strip_ansi, terminate, terminate_group, wait_for_exit, Proc, Slot, Spawner,
+};
 
 /// Full snapshot of the download queue. Payload: `Vec<DownloadJob>`.
 pub const EV_JOBS: &str = "youtube:jobs";
@@ -297,9 +299,49 @@ fn find_ytdlp(override_path: Option<&Path>) -> Option<PathBuf> {
     which("yt-dlp")
 }
 
+/// `yt-dlp --version`, memoised against the binary's identity.
+///
+/// The probe is a fork, an exec and a Python interpreter start — measured at
+/// 133 ms — and `youtube_status` runs it every time the import drawer opens.
+/// Keying the cache on the path, size and mtime keeps what the uncached version
+/// was for: a `yt-dlp` installed or upgraded while the app is open still gets
+/// re-probed, because its identity changed.
+fn ytdlp_version(bin: &Path) -> Option<String> {
+    /// Path, length and mtime — enough to notice an upgrade in place.
+    type Stamp = (PathBuf, u64, Option<std::time::SystemTime>);
+    static CACHE: Mutex<Option<(Stamp, Option<String>)>> = Mutex::new(None);
+
+    let meta = std::fs::metadata(bin).ok();
+    let stamp: Stamp = (
+        bin.to_path_buf(),
+        meta.as_ref().map(|m| m.len()).unwrap_or(0),
+        meta.as_ref().and_then(|m| m.modified().ok()),
+    );
+
+    let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((cached, version)) = cache.as_ref() {
+        if *cached == stamp {
+            return version.clone();
+        }
+    }
+
+    let version = Command::new(bin)
+        .arg("--version")
+        .stdin(Stdio::null())
+        .output()
+        .ok()
+        .and_then(|out| {
+            let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            (!text.is_empty()).then_some(text)
+        });
+    *cache = Some((stamp, version.clone()));
+    version
+}
+
 impl Tools {
     /// Re-resolved on every status call rather than cached at startup, so
     /// installing `yt-dlp` while the app is open is noticed without a restart.
+    /// Only the `--version` probe is memoised; see [`ytdlp_version`].
     fn discover(lib: &Library, override_path: Option<&Path>) -> Self {
         let ytdlp = find_ytdlp(override_path);
         let ffmpeg = which("ffmpeg");
@@ -321,15 +363,7 @@ impl Tools {
             None
         };
 
-        let version = ytdlp.as_ref().and_then(|bin| {
-            let out = Command::new(bin)
-                .arg("--version")
-                .stdin(Stdio::null())
-                .output()
-                .ok()?;
-            let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            (!text.is_empty()).then_some(text)
-        });
+        let version = ytdlp.as_deref().and_then(ytdlp_version);
 
         Self {
             ytdlp_path: ytdlp.as_ref().map(|p| p.display().to_string()),
@@ -539,6 +573,18 @@ struct Queue {
     stop: bool,
 }
 
+/// The job that owns the running `yt-dlp`, together with its process group.
+///
+/// The two are stored as one value so a cancel can establish "this really is
+/// the job the user named" and capture what to signal under a single lock. Read
+/// separately, the job could exit and the next one start in between, and the
+/// signal would land on the wrong download.
+#[derive(Debug, Clone, Copy)]
+struct Active {
+    job_id: u64,
+    pgid: i32,
+}
+
 pub struct Inner {
     lib: Library,
     spawner: Spawner,
@@ -548,7 +594,7 @@ pub struct Inner {
     /// concurrent transcodes saturate the disk for no wall-clock gain, and a
     /// single slot makes "cancel" and "clean up partials" unambiguous.
     active: Slot,
-    active_job: Mutex<Option<u64>>,
+    active_job: Mutex<Option<Active>>,
     next_id: AtomicU64,
     /// Test hook: forces the binary instead of resolving one from `PATH`.
     ytdlp_override: Option<PathBuf>,
@@ -748,12 +794,21 @@ impl Downloads {
 
         // Only the running job needs a signal, and only off the caller's thread:
         // `terminate` waits out the grace period and this arrives on the UI one.
-        if *self.active_job.lock().unwrap_or_else(|e| e.into_inner()) == Some(job_id) {
+        //
+        // The pgid is captured under the same lock as the ownership check, and
+        // re-checked against the slot before anything is signalled. Without
+        // that, a job that exits naturally between the check and the signal lets
+        // the worker start the next one and this kills *that* download instead.
+        let target = {
+            let guard = self.active_job.lock().unwrap_or_else(|e| e.into_inner());
+            guard.filter(|a| a.job_id == job_id).map(|a| a.pgid)
+        };
+        if let Some(pgid) = target {
             let dl = self.clone();
             thread::spawn(move || {
                 // SIGINT first: yt-dlp unwinds, removes its own part-file and
                 // lets ffmpeg close the container it is writing.
-                terminate(&dl.active, proc::SIGINT, Duration::from_secs(5));
+                terminate_group(&dl.active, Some(pgid), proc::SIGINT, Duration::from_secs(5));
             });
         }
     }
@@ -951,16 +1006,18 @@ impl Downloads {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .replace(Proc { child, pgid });
-        *self.active_job.lock().unwrap_or_else(|e| e.into_inner()) = Some(job_id);
+        *self.active_job.lock().unwrap_or_else(|e| e.into_inner()) = Some(Active { job_id, pgid });
 
         // A cancel that arrived between the check at the top of `run_job` and
         // the slot being filled would otherwise have signalled nothing.
         if self.is_cancelled(job_id) {
-            terminate(&self.active, proc::SIGINT, Duration::from_secs(5));
+            terminate_group(&self.active, Some(pgid), proc::SIGINT, Duration::from_secs(5));
         }
 
         let errors: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-        if let Some(stderr) = stderr {
+        // Kept rather than detached: the collected lines are read below, and a
+        // pump still in flight has not collected them yet.
+        let stderr_pump = stderr.map(|stderr| {
             let errors = Arc::clone(&errors);
             thread::spawn(move || {
                 pump(stderr, |raw| {
@@ -972,8 +1029,8 @@ impl Downloads {
                             .push(message);
                     }
                 });
-            });
-        }
+            })
+        });
 
         // --- the per-job state machine -------------------------------------
         //
@@ -1058,6 +1115,15 @@ impl Downloads {
 
         let status = wait_for_exit(&self.active);
         let code = status.and_then(|s| s.code());
+        // `wait_for_exit` returns the moment the child is reaped, which on a
+        // cancel or a fast failure is immediately — while the last `ERROR:` line
+        // is still crossing the pipe. Reading the buffer before the pump has
+        // drained it is what turned "Private video" into the exit code nobody
+        // can act on. Joining costs nothing: the pipe is closed by the same
+        // process death that ended the wait.
+        if let Some(handle) = stderr_pump {
+            let _ = handle.join();
+        }
         let errors = errors.lock().unwrap_or_else(|e| e.into_inner()).clone();
 
         // An entry that errored mid-playlist never produced a FILE line, so the
@@ -1116,6 +1182,13 @@ impl Downloads {
     /// The existence and size checks are the gate on `status = 'ready'`: this is
     /// the only place that status is written, and it is written only once the
     /// bytes are demonstrably on disk.
+    ///
+    /// File and row are all-or-nothing in both directions. If the row cannot be
+    /// written — the database is locked by a generation run, or the playlist the
+    /// import was aimed at has since been deleted — the mp3 goes with it: it
+    /// sits in `tracks/`, which `clear_dir` never sweeps (only `.incoming` is
+    /// scratch), so nothing would ever collect it, and `--force-overwrites`
+    /// means a later re-import would not even notice it was there.
     fn commit(&self, meta: &Meta, path: &str, playlist_id: Option<i64>) -> Result<i64, String> {
         let file = Path::new(path);
         let size = std::fs::metadata(file)
@@ -1126,20 +1199,39 @@ impl Downloads {
             return Err(format!("\"{}\" downloaded as an empty file", meta.title()));
         }
 
+        match self.record(meta, file, playlist_id) {
+            Ok(track_id) => Ok(track_id),
+            Err(message) => {
+                let _ = std::fs::remove_file(file);
+                Err(message)
+            }
+        }
+    }
+
+    /// The database half of [`Self::commit`], in one transaction.
+    ///
+    /// The transaction is what makes the failure arm of `commit` safe to delete
+    /// the file from: a playlist insert that fails after the track row was
+    /// written would otherwise leave a `ready` row pointing at an mp3 the caller
+    /// is about to remove — the exact "row the player can never load" this
+    /// module exists to prevent, arrived at from the other side.
+    fn record(&self, meta: &Meta, file: &Path, playlist_id: Option<i64>) -> Result<i64, String> {
         let duration = probe_duration(file).or(meta.duration);
-        let conn = self.lib.connect()?;
+        let mut conn = self.lib.connect()?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
 
         // Belt to the archive's braces: if the row somehow already exists, add
         // it to the playlist rather than creating a second row for one file.
-        if let Some(existing) = find_by_video_id(&conn, &meta.id)? {
+        if let Some(existing) = find_by_video_id(&tx, &meta.id)? {
             if let Some(pl) = playlist_id {
-                append_to_playlist(&conn, pl, existing)?;
+                append_to_playlist(&tx, pl, existing)?;
             }
+            tx.commit().map_err(|e| e.to_string())?;
             return Ok(existing);
         }
 
         let track_id = insert_imported(
-            &conn,
+            &tx,
             &ImportedTrack {
                 video_id: meta.id.clone(),
                 title: meta.title(),
@@ -1150,8 +1242,9 @@ impl Downloads {
             },
         )?;
         if let Some(pl) = playlist_id {
-            append_to_playlist(&conn, pl, track_id)?;
+            append_to_playlist(&tx, pl, track_id)?;
         }
+        tx.commit().map_err(|e| e.to_string())?;
         Ok(track_id)
     }
 
@@ -1212,7 +1305,13 @@ pub fn spawn_worker<R: Runtime>(downloads: Downloads, app: AppHandle<R>) {
 // Commands
 // ---------------------------------------------------------------------------
 
-#[tauri::command]
+/// `(async)` on the two commands that leave the process: `youtube_status` walks
+/// `PATH` and may fork `yt-dlp --version`, and `youtube_import` opens the
+/// database and writes to it. A plain `#[tauri::command]` runs inline on the
+/// IPC thread — the GTK main thread — so either of those stalls the window. See
+/// the note above the commands in `library.rs`. The other three only touch the
+/// in-memory queue and are genuinely instant.
+#[tauri::command(async)]
 pub fn youtube_status(downloads: State<'_, Downloads>) -> Tools {
     downloads.tools()
 }
@@ -1222,7 +1321,7 @@ pub fn youtube_jobs(downloads: State<'_, Downloads>) -> Vec<DownloadJob> {
     downloads.jobs()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn youtube_import(
     app: AppHandle,
     downloads: State<'_, Downloads>,
@@ -1619,6 +1718,12 @@ wait
 
     /// yt-dlp failing outright — a removed, private or region-blocked video —
     /// must leave the library exactly as it was, and must say why.
+    ///
+    /// The ERROR line is deliberately emitted *after* yt-dlp itself exits, from
+    /// a subshell that does not hold stdout. That is the real shape of the race:
+    /// `wait_for_exit` returns the instant the child is reaped, and reading the
+    /// collected errors before the stderr pump has drained gives the user
+    /// "yt-dlp exited with status 1" instead of the reason.
     #[cfg(target_os = "linux")]
     #[test]
     fn a_failed_download_leaves_no_row() {
@@ -1629,7 +1734,7 @@ wait
 
         let script = r#"#!/bin/sh
 printf 'MAIP-META {"id": "aaaaaaaaaaa", "title": "Gone", "duration": 10}\n'
-printf 'ERROR: [youtube] aaaaaaaaaaa: Video unavailable\n' >&2
+( sleep 0.4; printf 'ERROR: [youtube] aaaaaaaaaaa: Video unavailable\n' >&2 ) >/dev/null &
 exit 1
 "#;
         let fx = fixture("failed", script);
@@ -1657,7 +1762,8 @@ exit 1
             .expect("job");
         assert_eq!(
             job.detail, "Video unavailable",
-            "yt-dlp's own words reach the user"
+            "yt-dlp's own words reach the user, even when the line lands after \
+             the process is already reaped"
         );
         assert_eq!(job.added, 0);
         assert!(ready_rows(&fx.lib).is_empty(), "no row for a failed fetch");
@@ -1794,6 +1900,59 @@ exit 0
         assert!(
             std::fs::metadata(&path).expect("stat").len() > 10_000,
             "and it has audio in it"
+        );
+
+        downloads.shutdown();
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A finished mp3 whose row cannot be written must not be left behind.
+    ///
+    /// `clear_dir` only ever sweeps `.incoming`, so a file that reached
+    /// `tracks/` with no row behind it is never collected — and it is reachable:
+    /// `lib.connect()` fails while a generation run holds the write lock, and
+    /// the playlist the import was aimed at can be deleted mid-download. A
+    /// dangling foreign key stands in for both here, because it fails *after*
+    /// the track row has already been inserted, which is the arm that has to
+    /// roll back rather than leave a `ready` row pointing at a deleted file.
+    #[test]
+    fn a_failed_commit_leaves_no_orphaned_file() {
+        let root = std::env::temp_dir().join(format!(
+            "music-ai-yt-orphan-{}-{:?}",
+            std::process::id(),
+            thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let lib = Library::at(root.join("library").join("library.db"));
+        lib.migrate().expect("migrate");
+
+        let file = lib.tracks_dir().join("aaaaaaaaaaa-Orphan.mp3");
+        std::fs::write(&file, b"not silence, but bytes").expect("write");
+
+        let downloads = Downloads::with_ytdlp(lib.clone(), Some(PathBuf::from("/nonexistent")));
+        let meta = Meta {
+            id: "aaaaaaaaaaa".into(),
+            title: Some("Orphan".into()),
+            uploader: None,
+            channel: None,
+            duration: Some(10.0),
+            webpage_url: None,
+        };
+
+        // No playlist 9999: the append fails once the track row is already in.
+        let err = downloads
+            .commit(&meta, &file.display().to_string(), Some(9999))
+            .expect_err("the commit cannot succeed");
+
+        assert!(
+            !file.exists(),
+            "a commit that failed left the mp3 in tracks/ forever: {err}"
+        );
+        let conn = lib.connect().expect("connect");
+        assert_eq!(
+            find_by_video_id(&conn, "aaaaaaaaaaa").expect("lookup"),
+            None,
+            "the failed commit must not leave a row either"
         );
 
         downloads.shutdown();

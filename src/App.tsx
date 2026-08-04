@@ -104,6 +104,12 @@ export default function App() {
     mode: "shuffle",
     items: [],
   });
+  // Rows the resolver could not turn into a URL. `path` being set only says the
+  // database once knew where the file was, so this is the only evidence there
+  // is that it is still there; the playlist walker steps over these rather than
+  // handing the player a row it already knows is dead. Cleared on every library
+  // reload, so a drive that comes back is not remembered as broken.
+  const deadRef = useRef<Set<number>>(new Set());
   useEffect(() => {
     queueRef.current = { mode: queueMode, items };
   });
@@ -123,7 +129,20 @@ export default function App() {
   // -- audio graph ----------------------------------------------------------
 
   useEffect(() => {
-    const player = new Player((track) => trackSourceUrl(track.id));
+    const dead = deadRef.current;
+    const player = new Player(async (track) => {
+      try {
+        const url = await trackSourceUrl(track.id);
+        if (url !== null) {
+          dead.delete(track.id);
+          return url;
+        }
+      } catch {
+        /* A row the backend cannot resolve is a dead row, whichever way it says so. */
+      }
+      dead.add(track.id);
+      return null;
+    });
     playerRef.current = player;
     // The one definition of "what plays next". Every surface that can advance
     // the player — the Transport button, the tray menu, the media keys, the
@@ -131,7 +150,7 @@ export default function App() {
     player.setNextSelector((current) => {
       const queue = queueRef.current;
       return queue.mode === "playlist"
-        ? nextInPlaylist(queue.items, current)
+        ? nextInPlaylist(queue.items, current, dead)
         : bag.next(current);
     });
     setAnalyser(player.analyser);
@@ -176,6 +195,9 @@ export default function App() {
 
   useEffect(() => {
     let cancelled = false;
+    // A reload is the one moment worth trusting the database again: files that
+    // failed to resolve may well have been re-downloaded or regenerated.
+    deadRef.current.clear();
     void (async () => {
       try {
         const [tracks, nextStats, options] = await Promise.all([
@@ -301,7 +323,7 @@ export default function App() {
     // so pressing Play on a media key does the same thing as pressing it here.
     const first =
       queueMode === "playlist"
-        ? nextInPlaylist(items, null)
+        ? nextInPlaylist(items, null, deadRef.current)
         : (bag.next(null) ?? visible[0] ?? library[0] ?? null);
     if (first !== null) playTrack(first);
   }, [bag, items, library, playTrack, queueMode, visible]);
@@ -632,17 +654,27 @@ function EmptyLibrary({
  * The track after `current` in the playlist, wrapping at the end.
  *
  * Rows whose file has gone missing are stepped over rather than handed to the
- * player, and a `current` that is not in this playlist at all starts it from
- * the top — which is what happens when the user was shuffling and then clicks
- * a playlist row. Returns null only when the playlist has nothing playable,
- * which stops the player rather than looping on a dead entry.
+ * player — both the ones the database never had a path for and the ones the
+ * resolver has since failed on, which the column cannot tell us about. A
+ * `current` that is not in this playlist at all starts it from the top, which
+ * is what happens when the user was shuffling and then clicks a playlist row.
+ *
+ * Returns null when the playlist has nothing playable *left*, which stops the
+ * player rather than looping on a dead entry — and that includes a playlist
+ * whose only playable entry is the one already playing: handing that back
+ * would load the same file onto both decks and crossfade it into itself.
  */
-function nextInPlaylist(items: PlaylistItem[], current: Track | null): PlaylistItem | null {
-  const playable = items.filter((item) => item.path !== null);
+function nextInPlaylist(
+  items: PlaylistItem[],
+  current: Track | null,
+  dead: ReadonlySet<number>,
+): PlaylistItem | null {
+  const playable = items.filter((item) => item.path !== null && !dead.has(item.id));
   if (playable.length === 0) return null;
 
   const at = current === null ? -1 : playable.findIndex((item) => item.id === current.id);
-  return playable[(at + 1) % playable.length] ?? null;
+  const next = playable[(at + 1) % playable.length] ?? null;
+  return next !== null && next.id === current?.id ? null : next;
 }
 
 function describe(err: unknown): string {

@@ -21,8 +21,16 @@ fn main() {
             // Additive and idempotent: the user's database is already populated
             // by the generator, which keeps writing to it independently. This
             // only adds the import columns and the playlist tables.
+            //
+            // It is also a *writer*, so it can lose the five-second race with a
+            // generation run that is mid-batch. That is not fatal — the window
+            // must still open — but it is not swallowed either: the failure is
+            // recorded on the `Library`, every command retries the migration
+            // before it queries, and until one succeeds the UI is handed the
+            // real error instead of an empty library over a full one.
             if let Err(err) = lib.migrate() {
                 eprintln!("library migration failed: {err}");
+                eprintln!("the library commands will retry it and report it until it succeeds");
             }
 
             // tauri.conf.json enables the asset protocol but leaves its scope

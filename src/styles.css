@@ -1,9 +1,15 @@
 /* ---------------------------------------------------------------------------
-   Music AI Player — amber phosphor.
+   Music AI Player — base layer.
 
-   One accent (hazard amber) carries every live signal: the playhead, the
-   selected row, the meters. Everything else is greyscale, so anything glowing
-   is by definition something happening right now.
+   One accent carries every live signal: the playhead, the selected row, the
+   meters. Everything else is greyscale, so anything standing out is by
+   definition something happening right now.
+
+   The accent lives in the `--amber*` tokens below. The name is historical —
+   this was an amber phosphor panel before the metal restyle — and it is kept
+   because every rule in this file already reaches for it: theme-metal.css
+   loads last and re-points the same tokens at the brushed-metal palette,
+   where the accent is "brighter" rather than another colour.
 --------------------------------------------------------------------------- */
 
 :root {

@@ -1,6 +1,7 @@
 import type { PlayerCrossfade } from "../audio/player";
 import { CROSSFADE_SECONDS } from "../audio/player";
 import type { Track } from "../types";
+import { isImported } from "../types";
 
 interface Props {
   playing: boolean;
@@ -83,7 +84,11 @@ export function Transport(props: Props) {
             ? `Handing over to ${fade?.to?.title ?? "next"}`
             : queued === null
               ? `Crossfade ${CROSSFADE_SECONDS}s · nothing queued`
-              : `Next · ${queued.title} · ${queued.bpm} BPM`}
+              : // An import has no tempo — the row stores 0 — so it names the
+                // channel here, the same swap the library rows make.
+                `Next · ${queued.title} · ${
+                  isImported(queued) ? (queued.uploader ?? "YouTube") : `${queued.bpm} BPM`
+                }`}
         </span>
       </div>
 

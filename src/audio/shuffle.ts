@@ -134,12 +134,17 @@ export class ShuffleBag {
   }
 
   private pickByTempo(ids: number[], current: Track | null): number {
-    if (current === null) return randomOf(ids);
+    const from = current === null ? null : tempoOf(current);
+    // Nothing to beat-match against — a YouTube import is playing, or this is
+    // the first track of the session. Any candidate is as good as any other.
+    if (from === null) return randomOf(ids);
 
-    const scored = ids.map((id) => ({
-      id,
-      delta: Math.abs((this.library.get(id)?.bpm ?? current.bpm) - current.bpm),
-    }));
+    const scored = ids.map((id) => {
+      const bpm = tempoOf(this.library.get(id));
+      // An unknown tempo is neutral, not distant: it neither attracts nor
+      // repels, so imports stay in the running against any current track.
+      return { id, delta: bpm === null ? 0 : Math.abs(bpm - from) };
+    });
 
     const matched = scored.filter((entry) => entry.delta <= this.config.bpmWindow);
     if (matched.length > 0) return randomOf(matched.map((entry) => entry.id));
@@ -149,6 +154,20 @@ export class ShuffleBag {
     scored.sort((a, b) => a.delta - b.delta);
     return randomOf(scored.slice(0, this.config.nearestFallback).map((entry) => entry.id));
   }
+}
+
+/**
+ * A track's tempo, or null when it has none.
+ *
+ * `bpm` is NOT NULL in the library schema, so a YouTube import — which carries
+ * no tempo at all — stores 0. Read as a number that is 128 BPM away from every
+ * generated track, which put the two behind a wall: the bpm window is 8, so
+ * imports and generated tracks could never follow one another and each cycle
+ * played one pool through and then the other. Read as "unknown" they interleave.
+ */
+function tempoOf(track: Track | undefined): number | null {
+  if (track === undefined) return null;
+  return track.bpm > 0 ? track.bpm : null;
 }
 
 /** Fisher-Yates, on a copy. */

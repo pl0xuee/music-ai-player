@@ -17,6 +17,14 @@ const TICK_MS = 100;
 const AUDIO_UNAVAILABLE =
   "No audio output is available — the system has no usable audio device.";
 
+/**
+ * How many selections `advance()` will try before giving up.
+ *
+ * A missing file must not end the session, but a library whose folder has gone
+ * away must not walk thousands of dead rows over IPC either.
+ */
+const ADVANCE_ATTEMPTS = 12;
+
 export type DeckId = "A" | "B";
 
 export interface PlayerProgress {
@@ -48,8 +56,24 @@ type ListenerSets = { [K in keyof PlayerEventMap]: Set<Listener<K>> };
 /** Chooses what plays after `current`. Returning null stops after this track. */
 export type NextSelector = (current: Track | null) => Track | null;
 
-/** Turns a track into a URL an `<audio>` element can load. */
+/**
+ * Turns a track into a URL an `<audio>` element can load.
+ *
+ * Null means "this track has no playable file". A resolver that *rejects*
+ * instead is treated the same way — see `Player.resolveUrl` — because the real
+ * one goes through IPC, and an unhandled rejection there would leave the UI
+ * insisting it is still playing.
+ */
 export type SourceResolver = (track: Track) => Promise<string | null>;
+
+/** Outcome of one attempt to start a track. */
+type StartResult =
+  /** The deck is running. */
+  | "started"
+  /** No file, or the element refused to play it. Another track may work. */
+  | "failed"
+  /** A newer play() took the player over while this one was waiting. */
+  | "superseded";
 
 interface Deck {
   id: DeckId;
@@ -88,8 +112,22 @@ export class Player {
   private timer: number | null = null;
   /** AudioContext timestamp the running fade began at, or null when idle. */
   private fadeStartedAt: number | null = null;
-  /** Guards against a stale preload landing after a skip. */
+  /**
+   * Length of the fade in flight. Shorter than `CROSSFADE_SECONDS` when the
+   * outgoing track is too short to give the full handover to.
+   */
+  private fadeSeconds = CROSSFADE_SECONDS;
+  /**
+   * Bumped by every `cancelFade`. `beginFade` captures it before awaiting the
+   * incoming element and refuses to arm a fade that was cancelled meanwhile:
+   * otherwise a play, skip or seek landing inside that window is silently
+   * undone and the track the user just chose is faded to silence.
+   */
+  private fadeSeq = 0;
+  /** Guards against a stale preload — or a stale play — landing after a skip. */
   private preloadToken = 0;
+  /** True while `pause()` is holding the context suspended. */
+  private suspendedForPause = false;
   private volume = 0.8;
 
   constructor(resolveSource: SourceResolver) {
@@ -188,6 +226,27 @@ export class Player {
   }
 
   /**
+   * Bring the context back after `pause()` suspended it.
+   *
+   * Awaiting is safe here and only here: the context was running a moment ago,
+   * so this is not the autoplay-policy case `unlock` must not await. Every
+   * entry point into playback goes through this, so the fade automation — which
+   * was frozen along with the clock — restarts together with the elements.
+   */
+  private async wake(): Promise<void> {
+    if (!this.suspendedForPause) {
+      this.unlock();
+      return;
+    }
+    this.suspendedForPause = false;
+    try {
+      await this.ctx.resume();
+    } catch (err) {
+      this.emit("error", { message: `${AUDIO_UNAVAILABLE} (${describe(err)})` });
+    }
+  }
+
+  /**
    * True once the output device has failed for good. The browser closes the
    * context when it cannot open a device, and a closed context never reopens,
    * so every later attempt has to say so instead of arming a silent deck.
@@ -196,31 +255,77 @@ export class Player {
     return this.ctx.state === "closed";
   }
 
+  /**
+   * Resolve a track's URL, turning a rejected resolver into the same null a
+   * missing file already produces.
+   *
+   * The production resolver crosses the IPC bridge and rejects when the row's
+   * file has gone; neither caller is in a position to let that escape. An
+   * unhandled rejection here kills the advance that was in progress without
+   * emitting anything, so the transport keeps offering "Pause" for a player
+   * that will never make another sound.
+   */
+  private async resolveUrl(track: Track): Promise<string | null> {
+    try {
+      return await this.resolveSource(track);
+    } catch {
+      return null;
+    }
+  }
+
+  /** Ask for the next track, absorbing a selector that throws. */
+  private selectNext(current: Track | null): Track | null {
+    try {
+      return this.nextSelector(current);
+    } catch (err) {
+      this.emit("error", { message: describe(err) });
+      return null;
+    }
+  }
+
   setNextSelector(selector: NextSelector): void {
     this.nextSelector = selector;
   }
 
   // -- transport ------------------------------------------------------------
 
-  /** Load `track` onto the active deck and start it, abandoning any fade. */
-  async play(track: Track): Promise<void> {
+  /**
+   * Load `track` onto the active deck and start it, abandoning any fade.
+   * Resolves true once the deck is actually running.
+   */
+  async play(track: Track): Promise<boolean> {
+    return (await this.start(track)) === "started";
+  }
+
+  /** `play`, with the detail `advance` needs to decide whether to try again. */
+  private async start(track: Track): Promise<StartResult> {
     if (this.audioUnavailable) {
       this.emit("error", { message: AUDIO_UNAVAILABLE });
-      return;
+      return "failed";
     }
-    this.unlock();
     this.cancelFade();
+    // The token the preload already used, now shared with play: a second click
+    // landing while this one waits on IPC must win, and the one it overtook
+    // must not touch the decks on its way out.
     this.preloadToken += 1;
+    const token = this.preloadToken;
 
     const deck = this.decks[this.active];
     const other = this.decks[this.idle];
     other.el.pause();
     this.setGain(other, 0);
 
-    const url = await this.resolveSource(track);
+    // Everything above is synchronous, so a click always unwinds the fade it
+    // interrupted before anything else can observe the player.
+    await this.wake();
+    const url = await this.resolveUrl(track);
+    if (token !== this.preloadToken) return "superseded";
     if (url === null) {
       this.emit("error", { message: `No audio file for "${track.title}".` });
-      return;
+      // Nothing new started, so say what is true now. Without this the button
+      // keeps reading "Pause" and the visualiser stays lit for a dead player.
+      this.emit("statechange", { playing: this.isPlaying });
+      return "failed";
     }
 
     deck.track = track;
@@ -231,14 +336,19 @@ export class Player {
     try {
       await deck.el.play();
     } catch (err) {
+      // A newer load is what aborted this one; that is not an error to report.
+      if (token !== this.preloadToken) return "superseded";
       this.emit("error", { message: describe(err) });
-      return;
+      this.emit("statechange", { playing: this.isPlaying });
+      return "failed";
     }
+    if (token !== this.preloadToken) return "superseded";
 
     this.emit("trackchange", { track, deck: deck.id });
     this.emit("statechange", { playing: true });
     this.startTicking();
     void this.preloadNext();
+    return "started";
   }
 
   async resume(): Promise<void> {
@@ -248,7 +358,7 @@ export class Player {
       this.emit("error", { message: AUDIO_UNAVAILABLE });
       return;
     }
-    this.unlock();
+    await this.wake();
     try {
       await deck.el.play();
       if (this.fadeStartedAt !== null) await this.decks[this.idle].el.play();
@@ -264,6 +374,21 @@ export class Player {
     this.decks[this.active].el.pause();
     // Mid-fade both decks are audible, so the incoming one has to stop too.
     if (this.fadeStartedAt !== null) this.decks[this.idle].el.pause();
+    // Suspending stops `ctx.currentTime`, and with it both the fade's progress
+    // and the gain curve already scheduled on the automation timeline. Without
+    // it a handover runs to completion on wall-clock time while the audio sits
+    // still: come back ten seconds later and the outgoing track has been
+    // retired mid-phrase, the incoming one starts from wherever the fade got
+    // to, and a trackchange has counted a play nobody heard.
+    if (this.ctx.state === "running") {
+      this.suspendedForPause = true;
+      void this.ctx.suspend().catch(() => {
+        // An engine that will not suspend still has to be resumable; the fade
+        // then finishes late rather than not at all.
+        this.suspendedForPause = false;
+      });
+    }
+    this.stopTicking();
     this.emit("statechange", { playing: false });
   }
 
@@ -363,7 +488,7 @@ export class Player {
     this.emitProgress();
 
     if (this.fadeStartedAt !== null) {
-      const progress = Math.min((this.ctx.currentTime - this.fadeStartedAt) / CROSSFADE_SECONDS, 1);
+      const progress = Math.min((this.ctx.currentTime - this.fadeStartedAt) / this.fadeSeconds, 1);
       this.emit("crossfade", {
         from: this.decks[this.active].track,
         to: this.decks[this.idle].track,
@@ -373,8 +498,10 @@ export class Player {
       return;
     }
 
-    if (el.paused || !Number.isFinite(el.duration)) return;
-    if (el.duration - el.currentTime <= CROSSFADE_SECONDS) {
+    if (el.paused) return;
+    const length = playableDuration(el);
+    if (length === null) return;
+    if (length - el.currentTime <= fadeLengthFor(length)) {
       void this.beginFade();
     }
   }
@@ -394,7 +521,7 @@ export class Player {
     this.preloadToken += 1;
     const token = this.preloadToken;
     const idle = this.decks[this.idle];
-    const next = this.nextSelector(this.currentTrack);
+    const next = this.selectNext(this.currentTrack);
 
     if (next === null) {
       idle.track = null;
@@ -403,11 +530,16 @@ export class Player {
       return;
     }
 
-    const url = await this.resolveSource(next);
+    const url = await this.resolveUrl(next);
     // A skip or a fresh selection may have raced ahead while we awaited IPC.
     if (token !== this.preloadToken) return;
     if (url === null) {
+      // Nothing is armed, so show nothing as queued rather than leaving the
+      // previous pick standing. The end of the current track then falls
+      // through to `advance`, which asks the selector for something else.
+      idle.track = null;
       idle.armed = false;
+      this.emit("queued", { track: null });
       this.emit("error", { message: `No audio file for "${next.title}".` });
       return;
     }
@@ -425,24 +557,48 @@ export class Player {
     if (!incoming.armed || incoming.track === null) return;
     // Claim the fade before awaiting so the next tick cannot start a second one.
     this.fadeStartedAt = this.ctx.currentTime;
+    this.fadeSeconds = fadeLengthFor(playableDuration(outgoing.el));
+    const seq = this.fadeSeq;
 
     try {
       await incoming.el.play();
     } catch (err) {
+      // A cancel is what aborted this play(); it has already tidied up.
+      if (seq !== this.fadeSeq) return;
       this.fadeStartedAt = null;
       this.emit("error", { message: describe(err) });
       return;
     }
 
+    // A play, skip or seek during that await unwound this handover. Re-arming
+    // it here would fade the track the user just chose down to silence and
+    // then promote the deck the cancel had already paused.
+    if (seq !== this.fadeSeq) {
+      if (this.fadeStartedAt === null && this.decks[this.idle] === incoming) {
+        incoming.el.pause();
+        incoming.el.currentTime = 0;
+      }
+      return;
+    }
+
     const start = this.ctx.currentTime;
     this.fadeStartedAt = start;
-    this.rampCurve(outgoing.gain, false, start);
-    this.rampCurve(incoming.gain, true, start);
+    this.rampCurve(outgoing.gain, false, start, this.fadeSeconds);
+    this.rampCurve(incoming.gain, true, start, this.fadeSeconds);
     this.emit("crossfade", { from: outgoing.track, to: incoming.track, progress: 0 });
   }
 
   private completeFade(): void {
     const outgoing = this.decks[this.active];
+    const incoming = this.decks[this.idle];
+
+    // Only ever promote a deck that is actually running. A paused incoming
+    // deck means the handover was unwound underneath us, and promoting it
+    // would leave the transport naming a track that makes no sound.
+    if (incoming.track === null || incoming.el.paused) {
+      this.stop();
+      return;
+    }
     this.fadeStartedAt = null;
 
     outgoing.track = null;
@@ -451,8 +607,7 @@ export class Player {
     outgoing.el.removeAttribute("src");
     this.setGain(outgoing, 0);
 
-    this.active = this.idle;
-    const incoming = this.decks[this.active];
+    this.active = incoming.id;
     this.setGain(incoming, 1);
 
     this.emit("crossfade", { from: null, to: incoming.track, progress: 1 });
@@ -462,20 +617,39 @@ export class Player {
 
   private cancelFade(): void {
     if (this.fadeStartedAt === null) return;
+    // Anything still waiting on `beginFade`'s await has to learn that the fade
+    // it claimed is gone, or it will re-arm the one we are unwinding here.
+    this.fadeSeq += 1;
     this.fadeStartedAt = null;
     const incoming = this.decks[this.idle];
     incoming.el.pause();
+    // Back to the top: the deck stays armed with this track, and without the
+    // rewind it would start a few seconds in — a little further every time.
+    incoming.el.currentTime = 0;
     this.setGain(incoming, 0);
     this.setGain(this.decks[this.active], 1);
   }
 
+  /**
+   * Move to the next selection.
+   *
+   * A row whose file has gone missing must not end the session, so a failed
+   * start asks the selector for another one. Two things stop that spinning: a
+   * track the selector has already offered in this attempt ends it, and so
+   * does `ADVANCE_ATTEMPTS`.
+   */
   private async advance(): Promise<void> {
-    const next = this.nextSelector(this.currentTrack);
-    if (next === null) {
-      this.stop();
-      return;
+    const tried = new Set<number>();
+    let candidate = this.selectNext(this.currentTrack);
+
+    while (candidate !== null && tried.size < ADVANCE_ATTEMPTS) {
+      if (tried.has(candidate.id)) break;
+      tried.add(candidate.id);
+      // "superseded" means a play() overtook us; the player belongs to it now.
+      if ((await this.start(candidate)) !== "failed") return;
+      candidate = this.selectNext(candidate);
     }
-    await this.play(next);
+    this.stop();
   }
 
   private setGain(deck: Deck, value: number): void {
@@ -484,13 +658,31 @@ export class Player {
     deck.gain.gain.setValueAtTime(value, now);
   }
 
-  private rampCurve(node: GainNode, rising: boolean, startTime: number): void {
+  private rampCurve(node: GainNode, rising: boolean, startTime: number, seconds: number): void {
     // setValueCurveAtTime throws if any other event sits inside the curve's
     // window, so the range must be cleared first — and only then, without
     // planting a setValueAtTime at startTime itself.
     clearAutomation(node.gain, startTime);
-    node.gain.setValueCurveAtTime(equalPowerCurve(rising), startTime, CROSSFADE_SECONDS);
+    node.gain.setValueCurveAtTime(equalPowerCurve(rising), startTime, seconds);
   }
+}
+
+/** The element's duration, or null while it is unknown — 0, NaN or a stream. */
+function playableDuration(el: HTMLAudioElement): number | null {
+  const seconds = el.duration;
+  return Number.isFinite(seconds) && seconds > 0 ? seconds : null;
+}
+
+/**
+ * How long a track of `duration` seconds may spend handing over.
+ *
+ * Half the track at most. A full 8-second fade on a 6-second track would start
+ * at t = 0, so the track would never once be heard on its own — and the gain
+ * curve would still be climbing when the file ran out.
+ */
+function fadeLengthFor(duration: number | null): number {
+  if (duration === null) return CROSSFADE_SECONDS;
+  return Math.min(CROSSFADE_SECONDS, duration / 2);
 }
 
 /**

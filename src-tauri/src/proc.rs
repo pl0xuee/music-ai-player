@@ -191,11 +191,28 @@ pub fn wait_for_exit(slot: &Slot) -> Option<std::process::ExitStatus> {
 /// Signal the child's process group, escalating to `SIGKILL` if it has not gone
 /// within `grace`. Safe to call when nothing is running.
 pub fn terminate(slot: &Slot, first: i32, grace: Duration) {
+    terminate_group(slot, None, first, grace);
+}
+
+/// [`terminate`], restricted to one specific process group.
+///
+/// Callers that supervise a *queue* decide which child to signal under some
+/// other lock — the importer asks "is the running job the one the user
+/// cancelled?" — and between that decision and this call the child can exit on
+/// its own and the worker can install the next one. `only` is re-checked inside
+/// the slot's own lock at every step, so a cancel that loses that race signals
+/// nothing at all instead of killing whichever download started next.
+pub fn terminate_group(slot: &Slot, only: Option<i32>, first: i32, grace: Duration) {
+    let owned = |p: &Proc| match only {
+        Some(want) => p.pgid == want,
+        None => true,
+    };
+
     let pgid = {
         let guard = slot.lock().unwrap_or_else(|e| e.into_inner());
         match guard.as_ref() {
-            Some(p) => p.pgid,
-            None => return,
+            Some(p) if owned(p) => p.pgid,
+            _ => return,
         }
     };
     signals::signal_group(pgid, first);
@@ -205,7 +222,10 @@ pub fn terminate(slot: &Slot, first: i32, grace: Duration) {
         {
             let mut guard = slot.lock().unwrap_or_else(|e| e.into_inner());
             match guard.as_mut() {
+                // Empty, or already refilled with a child this call has no
+                // claim on: either way there is nothing left to wait for.
                 None => break,
+                Some(p) if !owned(p) => break,
                 Some(p) => {
                     if matches!(p.child.try_wait(), Ok(Some(_)) | Err(_)) {
                         *guard = None;
@@ -217,10 +237,12 @@ pub fn terminate(slot: &Slot, first: i32, grace: Duration) {
         if Instant::now() >= deadline {
             let mut guard = slot.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(p) = guard.as_mut() {
-                signals::signal_group(p.pgid, signals::SIGKILL);
-                // SIGKILL is not catchable, so this returns immediately.
-                let _ = p.child.wait();
-                *guard = None;
+                if owned(p) {
+                    signals::signal_group(p.pgid, signals::SIGKILL);
+                    // SIGKILL is not catchable, so this returns immediately.
+                    let _ = p.child.wait();
+                    *guard = None;
+                }
             }
             break;
         }
@@ -383,5 +405,39 @@ mod tests {
             thread::sleep(Duration::from_millis(40));
         }
         panic!("sleep {grandchild} survived the group kill");
+    }
+
+    /// A cancel names one job, but the signal is delivered from another thread
+    /// a moment later. If the named job finished on its own in between and the
+    /// worker started the next one, the successor must survive: `terminate_group`
+    /// re-checks the pgid inside the slot's lock rather than killing whatever it
+    /// finds there.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn terminate_leaves_a_process_group_it_was_not_asked_for_alone() {
+        let spawner = Spawner::start("test-spawner-mismatch");
+        let mut cmd = Command::new("/bin/sh");
+        cmd.arg("-c").arg("sleep 30").stdin(Stdio::null());
+
+        let child = spawner.spawn(cmd).expect("spawn shell");
+        let pid = child.id() as i32;
+        let pgid = signals::group_of(&child);
+
+        let holder = slot();
+        holder.lock().expect("lock").replace(Proc { child, pgid });
+
+        // Stands in for a job that has already exited. `1` is below the floor
+        // `signal_group` will send to, so even a total regression here cannot
+        // land a signal on an unrelated process group.
+        terminate_group(&holder, Some(1), signals::SIGTERM, Duration::from_millis(200));
+        assert!(
+            holder.lock().expect("lock").is_some(),
+            "the running child was reaped on behalf of a job that had already gone"
+        );
+        assert!(still_running(pid), "the wrong process group was signalled");
+
+        // Named correctly, it goes.
+        terminate_group(&holder, Some(pgid), signals::SIGTERM, Duration::from_secs(5));
+        assert!(holder.lock().expect("lock").is_none(), "child was not reaped");
     }
 }

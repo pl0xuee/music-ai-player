@@ -8,10 +8,11 @@
 //! of crashing.
 
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use rusqlite::{Connection, OpenFlags};
 use serde::Serialize;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Manager, Runtime, State};
 
 /// Overrides the auto-discovered database location. May point either at the
 /// `library.db` file itself or at the directory that contains it.
@@ -116,6 +117,18 @@ pub struct Stats {
 #[derive(Debug, Clone)]
 pub struct Library {
     db_path: PathBuf,
+    /// Whether the schema migration has completed against this database.
+    ///
+    /// The migration is a *writer* (`ALTER TABLE tracks ADD COLUMN source …`),
+    /// so it can lose a five-second race with the generator's `BEGIN IMMEDIATE`
+    /// and fail. Every later query then dies on `no such column: source`, which
+    /// the UI renders as an empty library over a full one. Remembering that it
+    /// has not run is what lets the next command retry it and, failing that,
+    /// report what actually went wrong.
+    ///
+    /// Shared across clones: the importer's worker holds its own `Library` and
+    /// must not re-run a migration the UI thread already did.
+    schema_ready: Arc<Mutex<bool>>,
 }
 
 impl Library {
@@ -151,7 +164,10 @@ impl Library {
     /// Point at an explicit `library.db`. Used by tests and by the importer's
     /// own worker, which is handed a resolved path rather than re-discovering.
     pub fn at(db_path: PathBuf) -> Self {
-        Self { db_path }
+        Self {
+            db_path,
+            schema_ready: Arc::new(Mutex::new(false)),
+        }
     }
 
     pub fn db_path(&self) -> &Path {
@@ -180,12 +196,24 @@ impl Library {
         Ok(Some(self.connect()?))
     }
 
-    /// Open for writing, creating the database if it is not there yet.
+    /// Open for writing, creating the database if it is not there yet, with the
+    /// schema guaranteed to be current.
     ///
     /// Unlike [`Self::open`] this never answers "no library": the import path
     /// has to be able to fill an empty install, so the file is brought into
     /// existence rather than reported missing.
     pub fn connect(&self) -> Result<Connection, String> {
+        self.ensure_schema()?;
+        self.open_conn()
+    }
+
+    /// A connection with no schema guarantee behind it.
+    ///
+    /// Only the migration itself may use this: it cannot wait on its own
+    /// completion. Everything else goes through [`Self::connect`], so no query
+    /// can ever run against the half-migrated schema a failed `ALTER TABLE`
+    /// leaves behind.
+    fn open_conn(&self) -> Result<Connection, String> {
         if let Some(root) = self.media_root() {
             std::fs::create_dir_all(root)
                 .map_err(|e| format!("cannot create {}: {e}", root.display()))?;
@@ -209,15 +237,47 @@ impl Library {
         Ok(conn)
     }
 
-    /// Bring the schema up to date. Called once at startup, before anything
-    /// reads or writes.
+    /// Run the migration unless it has already succeeded against this database.
+    ///
+    /// Called before every connection, so a migration that failed at startup —
+    /// because the generator was mid-batch and holding the write lock — is
+    /// retried by the next command instead of leaving every query to fail on a
+    /// column that was never added. If it still cannot run, the caller gets the
+    /// real reason rather than an empty result set.
+    pub fn ensure_schema(&self) -> Result<(), String> {
+        let mut ready = self.schema_ready.lock().unwrap_or_else(|e| e.into_inner());
+        if *ready {
+            return Ok(());
+        }
+        self.run_migration().map_err(|err| {
+            format!(
+                "the library database at {} could not be prepared: {err}",
+                self.db_path.display()
+            )
+        })?;
+        *ready = true;
+        Ok(())
+    }
+
+    /// Bring the schema up to date, whether or not it already is. Called once at
+    /// startup, before anything reads or writes.
     ///
     /// Every step is additive and idempotent: the user already has a populated
     /// `library.db` written by `engine/generate.py`, and the generator keeps
     /// writing to it independently. Nothing here drops, rewrites or reorders an
     /// existing table.
     pub fn migrate(&self) -> Result<(), String> {
-        let conn = self.connect()?;
+        let mut ready = self.schema_ready.lock().unwrap_or_else(|e| e.into_inner());
+        *ready = false;
+        self.run_migration()?;
+        *ready = true;
+        Ok(())
+    }
+
+    /// The DDL itself. Runs under the `schema_ready` lock in both entry points,
+    /// so two threads can never race two `ALTER TABLE`s against each other.
+    fn run_migration(&self) -> Result<(), String> {
+        let conn = self.open_conn()?;
 
         // WAL is what lets the generator write while the player reads. The
         // generator sets it too; setting it again is a no-op.
@@ -347,9 +407,24 @@ fn normalize_genre(genre: Option<String>) -> Option<String> {
 
 // ---------------------------------------------------------------------------
 // Commands
+//
+// Every one of these carries `(async)`, and none of them may lose it.
+//
+// `tauri-macros` runs a plain `#[tauri::command]` *inline on the IPC thread*,
+// which on Linux is the GTK main thread — the one that draws the window. Every
+// command here opens a SQLite connection, and `Library::connect` sets a
+// five-second `busy_timeout` because the generator holds `BEGIN IMMEDIATE` for
+// whole batches while it plans prompts. Under WAL a reader sails past that, but
+// a writer waits, and `mark_played` fires on every track change: without
+// `(async)` the window froze for five seconds at each handover during a
+// generation run. The reads are in the same boat because `connect` may have to
+// retry the migration, which is itself a writer.
+//
+// `(async)` needs no signature change — Tauri moves the sync body onto the
+// async runtime's pool. `engine_stop` solves the same problem by hand.
 // ---------------------------------------------------------------------------
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn list_tracks(lib: State<'_, Library>, genre: Option<String>) -> Result<Vec<Track>, String> {
     let Some(conn) = lib.open()? else {
         return Ok(Vec::new());
@@ -378,7 +453,7 @@ pub fn list_tracks(lib: State<'_, Library>, genre: Option<String>) -> Result<Vec
     Ok(tracks)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn library_stats(lib: State<'_, Library>) -> Result<Stats, String> {
     let mut stats = Stats {
         library_path: lib.db_path().display().to_string(),
@@ -440,7 +515,7 @@ pub fn library_stats(lib: State<'_, Library>) -> Result<Stats, String> {
     Ok(stats)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn genres(lib: State<'_, Library>) -> Result<Vec<String>, String> {
     let Some(conn) = lib.open()? else {
         return Ok(Vec::new());
@@ -455,7 +530,7 @@ pub fn genres(lib: State<'_, Library>) -> Result<Vec<String>, String> {
     Ok(list)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn rate_track(lib: State<'_, Library>, id: i64, rating: i64) -> Result<(), String> {
     let Some(conn) = lib.open()? else {
         return Ok(());
@@ -470,7 +545,7 @@ pub fn rate_track(lib: State<'_, Library>, id: i64, rating: i64) -> Result<(), S
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn mark_played(lib: State<'_, Library>, id: i64) -> Result<(), String> {
     let Some(conn) = lib.open()? else {
         return Ok(());
@@ -495,10 +570,18 @@ pub fn mark_played(lib: State<'_, Library>, id: i64) -> Result<(), String> {
 /// Tauri v2 will not serve a path that is outside the asset protocol scope, so
 /// the `allow_file` call here is what makes the returned URL actually usable
 /// for libraries stored outside the default `library/` directory.
-#[tauri::command]
-pub fn track_source(
-    app: AppHandle,
-    lib: State<'_, Library>,
+///
+/// `None` covers every way a track can turn out to have no source — no such
+/// ready row, a row with a NULL path, and a row whose file has since been
+/// deleted or moved. The frontend's `SourceResolver` is typed
+/// `Promise<string | null>` and both of its call sites already handle `null` by
+/// leaving the deck empty and moving on; the missing-file case used to be an
+/// `Err` instead, which crosses the bridge as a rejected promise nothing is
+/// waiting to catch. A genuine failure — the query itself, or the scope
+/// widening — is still an error.
+fn source_path<R: Runtime>(
+    app: &AppHandle<R>,
+    lib: &Library,
     id: i64,
 ) -> Result<Option<String>, String> {
     let Some(conn) = lib.open()? else {
@@ -519,7 +602,7 @@ pub fn track_source(
         return Ok(None);
     };
     if !Path::new(&path).is_file() {
-        return Err(format!("audio file is missing: {path}"));
+        return Ok(None);
     }
 
     app.asset_protocol_scope()
@@ -527,6 +610,15 @@ pub fn track_source(
         .map_err(|e| format!("cannot expose {path} to the webview: {e}"))?;
 
     Ok(Some(path))
+}
+
+#[tauri::command(async)]
+pub fn track_source(
+    app: AppHandle,
+    lib: State<'_, Library>,
+    id: i64,
+) -> Result<Option<String>, String> {
+    source_path(&app, lib.inner(), id)
 }
 
 // ---------------------------------------------------------------------------
@@ -817,17 +909,17 @@ fn write_order(conn: &Connection, order: &[i64]) -> Result<(), String> {
 
 // -- commands ---------------------------------------------------------------
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn list_playlists(lib: State<'_, Library>) -> Result<Vec<Playlist>, String> {
     all_playlists(&lib.connect()?)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn create_playlist(lib: State<'_, Library>, name: String) -> Result<i64, String> {
     new_playlist(&lib.connect()?, &name)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn rename_playlist(lib: State<'_, Library>, id: i64, name: String) -> Result<(), String> {
     let name = clean_name(&name)?;
     let conn = lib.connect()?;
@@ -843,7 +935,7 @@ pub fn rename_playlist(lib: State<'_, Library>, id: i64, name: String) -> Result
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn delete_playlist(lib: State<'_, Library>, id: i64) -> Result<(), String> {
     // The items go with it via ON DELETE CASCADE; the tracks themselves do not.
     // Deleting a playlist must never delete audio.
@@ -853,7 +945,7 @@ pub fn delete_playlist(lib: State<'_, Library>, id: i64) -> Result<(), String> {
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn clear_playlist(lib: State<'_, Library>, id: i64) -> Result<(), String> {
     lib.connect()?
         .execute(
@@ -864,7 +956,7 @@ pub fn clear_playlist(lib: State<'_, Library>, id: i64) -> Result<(), String> {
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn list_playlist_items(
     lib: State<'_, Library>,
     playlist_id: i64,
@@ -872,7 +964,7 @@ pub fn list_playlist_items(
     playlist_items(&lib.connect()?, playlist_id)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn add_to_playlist(
     lib: State<'_, Library>,
     playlist_id: i64,
@@ -881,12 +973,12 @@ pub fn add_to_playlist(
     append_to_playlist(&lib.connect()?, playlist_id, track_id)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn remove_item(lib: State<'_, Library>, item_id: i64) -> Result<(), String> {
     drop_item(&lib.connect()?, item_id)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn reorder_item(lib: State<'_, Library>, item_id: i64, new_position: i64) -> Result<(), String> {
     move_item(&mut lib.connect()?, item_id, new_position)
 }
@@ -909,13 +1001,18 @@ mod tests {
         }
     }
 
-    fn temp_lib(tag: &str) -> TempLib {
+    fn temp_root(tag: &str) -> PathBuf {
         let root = std::env::temp_dir().join(format!(
             "music-ai-lib-{tag}-{}-{:?}",
             std::process::id(),
             std::thread::current().id()
         ));
         let _ = std::fs::remove_dir_all(&root);
+        root
+    }
+
+    fn temp_lib(tag: &str) -> TempLib {
+        let root = temp_root(tag);
         let lib = Library::at(root.join(LIBRARY_DIRNAME).join(DB_FILENAME));
         lib.migrate().expect("migrate");
         TempLib { root, lib }
@@ -1145,6 +1242,281 @@ mod tests {
         assert_eq!(
             imported_video_ids(&conn).expect("ids"),
             vec!["jNQXAC9IVRw".to_string()]
+        );
+    }
+
+    // -- M4: nothing that touches the database may run on the IPC thread ------
+
+    /// The `#[tauri::command…]` attribute immediately above `pub fn {name}`.
+    ///
+    /// Read out of the source because that attribute is the whole fix: it is
+    /// what makes `tauri-macros` emit `body_async` instead of `body_blocking`,
+    /// and nothing about the function's own signature records the difference.
+    fn command_attr(src: &str, name: &str) -> String {
+        let needle = format!("\npub fn {name}(");
+        let at = src
+            .find(&needle)
+            .unwrap_or_else(|| panic!("no `pub fn {name}(` in the source"));
+        let head = &src[..at + 1];
+        let attr_at = head
+            .rfind("#[tauri::command")
+            .unwrap_or_else(|| panic!("{name} is not a command"));
+        let attr = head[attr_at..].lines().next().expect("attribute line").trim();
+        assert!(
+            head[attr_at + attr.len()..].trim().is_empty(),
+            "{name} does not directly follow its own #[tauri::command] attribute"
+        );
+        attr.to_string()
+    }
+
+    /// A plain `#[tauri::command]` is run inline on the IPC thread, which on
+    /// Linux is the GTK thread that draws the window. Every command listed here
+    /// opens a SQLite connection carrying a five-second `busy_timeout`, and a
+    /// writer that lands while `generate.py` holds `BEGIN IMMEDIATE` waits out
+    /// every one of those seconds — reproduced as a five-second freeze at each
+    /// track handover, because `mark_played` fires on every one.
+    ///
+    /// Losing `(async)` on any of them brings that straight back, so the
+    /// attribute is asserted rather than trusted to survive an edit.
+    #[test]
+    fn every_database_command_is_dispatched_off_the_ipc_thread() {
+        let library_src = include_str!("library.rs");
+        let library_commands = [
+            // writers
+            "rate_track",
+            "mark_played",
+            "create_playlist",
+            "rename_playlist",
+            "delete_playlist",
+            "clear_playlist",
+            "add_to_playlist",
+            "remove_item",
+            "reorder_item",
+            // readers: `connect` retries the migration, which is itself a write
+            "list_tracks",
+            "library_stats",
+            "genres",
+            "track_source",
+            "list_playlists",
+            "list_playlist_items",
+        ];
+        for name in library_commands {
+            assert_eq!(
+                command_attr(library_src, name),
+                "#[tauri::command(async)]",
+                "library::{name} would block the UI thread on the database"
+            );
+        }
+
+        // The importer's two: one writes rows, the other forks `yt-dlp
+        // --version` (133 ms) every time the import drawer opens.
+        let youtube_src = include_str!("youtube.rs");
+        for name in ["youtube_status", "youtube_import"] {
+            assert_eq!(
+                command_attr(youtube_src, name),
+                "#[tauri::command(async)]",
+                "youtube::{name} would block the UI thread"
+            );
+        }
+    }
+
+    /// Why the attribute above matters: a write really does sit and wait.
+    ///
+    /// `generate.py` holds `BEGIN IMMEDIATE` across the insert of every planned
+    /// prompt. Under WAL a reader is unaffected, but a writer blocks until the
+    /// transaction ends — it succeeds, which is what the five-second
+    /// `busy_timeout` is for, but only after the wait. Whichever thread issues
+    /// it is stalled for the duration, and that thread must never be the one
+    /// drawing the window.
+    #[test]
+    fn a_write_waits_for_the_generator_s_transaction_instead_of_failing() {
+        use std::sync::mpsc;
+        use std::time::{Duration, Instant};
+
+        let tmp = temp_lib("busy");
+        let id = {
+            let conn = tmp.lib.connect().expect("connect");
+            add_track(&conn, "aaaaaaaaaaa", "Held")
+        };
+
+        // Stand in for the generator mid-batch.
+        let holder = tmp.lib.connect().expect("holder");
+        holder.execute_batch("BEGIN IMMEDIATE").expect("begin");
+
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let lib = tmp.lib.clone();
+        let writer = std::thread::spawn(move || {
+            let conn = lib.connect().expect("connect");
+            ready_tx.send(()).expect("signal");
+            let started = Instant::now();
+            let result = conn.execute(
+                "UPDATE tracks SET play_count = play_count + 1 WHERE id = ?1",
+                rusqlite::params![id],
+            );
+            (result, started.elapsed())
+        });
+
+        ready_rx.recv().expect("the writer connected");
+        std::thread::sleep(Duration::from_millis(250));
+        holder.execute_batch("COMMIT").expect("commit");
+
+        let (result, waited) = writer.join().expect("writer thread");
+        result.expect("the write waited out the lock rather than failing");
+        assert!(
+            waited >= Duration::from_millis(100),
+            "the write returned in {waited:?} — it did not block, so this test \
+             is no longer measuring what it claims to"
+        );
+    }
+
+    // -- M5: a migration that could not run is not an empty library ----------
+
+    /// A failed migration must surface as an error, not as "your library is
+    /// empty" over a full one.
+    ///
+    /// The `ALTER TABLE tracks ADD COLUMN source` is a writer, so it loses to a
+    /// generation run that is planning prompts at launch. `TRACK_COLUMNS` names
+    /// `source`, so *every* track query then fails with `no such column`, the
+    /// frontend catches it, and the user is shown the onboarding screen with a
+    /// full library on disk. Restarting fixes it and nothing says so.
+    ///
+    /// A read-only file stands in for the lock: same failure, no five-second
+    /// wait to sit through.
+    #[test]
+    fn a_failed_migration_is_reported_rather_than_read_as_an_empty_library() {
+        let root = temp_root("half-migrated");
+        let db = root.join(LIBRARY_DIRNAME).join(DB_FILENAME);
+        std::fs::create_dir_all(db.parent().expect("parent")).expect("mkdir");
+
+        // The generator's schema as it was before the import columns existed,
+        // with rows in it.
+        {
+            let conn = Connection::open(&db).expect("create");
+            conn.execute_batch(
+                "CREATE TABLE tracks (
+                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                     title TEXT NOT NULL, genre TEXT NOT NULL, bpm INTEGER NOT NULL,
+                     key_scale TEXT NOT NULL, prompt TEXT NOT NULL, duration REAL,
+                     status TEXT NOT NULL DEFAULT 'pending', path TEXT, task_id TEXT,
+                     error TEXT, created_at TEXT NOT NULL,
+                     play_count INTEGER NOT NULL DEFAULT 0, last_played TEXT,
+                     rating INTEGER NOT NULL DEFAULT 0
+                 );
+                 INSERT INTO tracks
+                     (title, genre, bpm, key_scale, prompt, status, path, created_at)
+                 VALUES
+                     ('One', 'techno', 128, 'A minor', 'dark', 'ready', '/tmp/one.mp3',
+                      '2026-01-01T00:00:00+00:00'),
+                     ('Two', 'techno', 128, 'A minor', 'dark', 'ready', '/tmp/two.mp3',
+                      '2026-01-01T00:00:00+00:00');",
+            )
+            .expect("legacy schema");
+        }
+        let tmp = TempLib {
+            root,
+            lib: Library::at(db.clone()),
+        };
+
+        let readonly = |yes: bool| {
+            let mut perms = std::fs::metadata(&db).expect("stat").permissions();
+            perms.set_readonly(yes);
+            std::fs::set_permissions(&db, perms).expect("chmod");
+        };
+
+        readonly(true);
+        let failure = tmp.lib.migrate().expect_err("the migration cannot run");
+        assert!(
+            failure.contains("readonly") || failure.contains("read-only"),
+            "the real reason has to survive: {failure}"
+        );
+
+        let app = tauri::test::mock_app();
+        app.manage(tmp.lib.clone());
+
+        let err = list_tracks(app.state::<Library>(), None)
+            .expect_err("a half-migrated schema must not read as an empty library");
+        assert!(
+            !err.contains("no such column"),
+            "the query ran against the half-migrated schema instead of being \
+             stopped by the migration that failed: {err}"
+        );
+        assert!(
+            err.contains(&db.display().to_string()),
+            "the error names the database it could not prepare: {err}"
+        );
+        library_stats(app.state::<Library>()).expect_err("stats must not report zero either");
+
+        // And once the obstacle is gone, the next command migrates and reads —
+        // no restart, which is the only recovery there used to be.
+        readonly(false);
+        let tracks = list_tracks(app.state::<Library>(), None).expect("the retry succeeds");
+        assert_eq!(tracks.len(), 2, "the library was there the whole time");
+        assert_eq!(tracks[0].source, SOURCE_GENERATED);
+        assert_eq!(
+            library_stats(app.state::<Library>()).expect("stats").ready,
+            2
+        );
+    }
+
+    // -- C1: no source is `None`, not an error -------------------------------
+
+    /// Every "there is nothing to play here" answer is `Ok(None)`.
+    ///
+    /// The frontend's `SourceResolver` is typed `Promise<string | null>` and
+    /// both call sites branch on `url === null`. A missing file used to be an
+    /// `Err` instead, which arrives as a rejected promise nothing catches — so
+    /// a track whose mp3 had been deleted or moved broke the deck rather than
+    /// being skipped.
+    #[test]
+    fn a_track_with_no_playable_file_resolves_to_none() {
+        let tmp = temp_lib("source");
+        let conn = tmp.lib.connect().expect("connect");
+
+        let missing = tmp.root.join("deleted-since.mp3");
+        assert!(!missing.exists());
+        let gone = insert_imported(
+            &conn,
+            &ImportedTrack {
+                video_id: "aaaaaaaaaaa".into(),
+                title: "Gone".into(),
+                uploader: None,
+                url: "https://youtu.be/aaaaaaaaaaa".into(),
+                duration: Some(60.0),
+                path: missing.display().to_string(),
+            },
+        )
+        .expect("insert");
+
+        let present = tmp.root.join("still-here.mp3");
+        std::fs::write(&present, b"bytes").expect("write");
+        let here = insert_imported(
+            &conn,
+            &ImportedTrack {
+                video_id: "bbbbbbbbbbb".into(),
+                title: "Here".into(),
+                uploader: None,
+                url: "https://youtu.be/bbbbbbbbbbb".into(),
+                duration: Some(60.0),
+                path: present.display().to_string(),
+            },
+        )
+        .expect("insert");
+
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+
+        assert_eq!(
+            source_path(&handle, &tmp.lib, gone).expect("a missing file is not an error"),
+            None
+        );
+        assert_eq!(
+            source_path(&handle, &tmp.lib, 999_999).expect("an unknown id is not an error"),
+            None
+        );
+        assert_eq!(
+            source_path(&handle, &tmp.lib, here).expect("resolve"),
+            Some(present.display().to_string()),
+            "a track that is on disk still resolves"
         );
     }
 
