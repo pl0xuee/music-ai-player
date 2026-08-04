@@ -1,0 +1,105 @@
+# Build and publish the AppImage.
+#
+# Pushing a `v*` tag builds the bundles, signs them with the updater key and
+# publishes a release carrying `latest.json` — which is the file the app checks
+# on "Check for updates". Without the signature the app refuses the download, so
+# a release built without the secret below is worse than no release at all.
+#
+# Running this by hand (workflow_dispatch) builds the same bundles and uploads
+# them as run artifacts without publishing anything, which is how to find out
+# that the build is broken without minting a release to prove it.
+
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+# tauri-action creates the release and uploads to it.
+permissions:
+  contents: write
+
+jobs:
+  bundle:
+    # Note: the AppImage inherits this runner's glibc, so it will not start on a
+    # distribution older than the runner. `ubuntu-latest` is the newest, which
+    # is the narrowest; drop to `ubuntu-22.04` for a bundle that runs almost
+    # anywhere. Nothing else in the file needs to change.
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # The Rust build is the long pole by a wide margin; keyed on the lockfile
+      # so it only rebuilds the world when dependencies actually move.
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      # webkit2gtk is the webview, ayatana-appindicator is the tray, rsvg
+      # rasterises the icon, and patchelf is what the AppImage bundler uses to
+      # rewrite the interpreter paths.
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libssl-dev \
+            build-essential \
+            patchelf \
+            file
+
+      - name: Install JavaScript dependencies
+        run: npm ci
+
+      - name: Build, sign and publish
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Signs the bundles and `latest.json`. The public half is baked into
+          # tauri.conf.json, and the app verifies against it before installing.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          # Empty on a manual run, which makes tauri-action build without
+          # publishing.
+          tagName: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+          releaseName: Music AI Player __VERSION__
+          releaseBody: |
+            A local desktop music player for long coding sessions.
+
+            Download the `.AppImage`, make it executable and run it:
+
+            ```bash
+            chmod +x Music*AI*Player_*.AppImage
+            ./Music*AI*Player_*.AppImage
+            ```
+
+            Installed builds update themselves from here — Settings → Updates.
+          releaseDraft: false
+          prerelease: false
+          # Writes `latest.json` beside the bundles. This is the whole update
+          # channel: without it the app has nothing to check.
+          includeUpdaterJson: true
+          args: --bundles appimage,deb
+
+      # Only reached on a manual run, where nothing was published.
+      - name: Upload bundles as artifacts
+        if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@v4
+        with:
+          name: bundles
+          if-no-files-found: error
+          path: |
+            src-tauri/target/release/bundle/appimage/*.AppImage*
+            src-tauri/target/release/bundle/deb/*.deb
