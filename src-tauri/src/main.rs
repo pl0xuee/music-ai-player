@@ -4,6 +4,7 @@
 mod desktop;
 mod engine;
 mod library;
+mod local;
 mod proc;
 mod stream;
 mod youtube;
@@ -13,6 +14,12 @@ use tauri::{Emitter, Manager, RunEvent, WindowEvent};
 fn main() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        // Only for the folder picker behind "Add local files". Dragging audio
+        // onto the window goes through the webview's own drag-drop event and
+        // needs no plugin at all.
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .setup(|app| {
             let handle = app.handle().clone();
 
@@ -112,6 +119,8 @@ fn main() {
             library::rate_track,
             library::mark_played,
             library::track_source,
+            library::prune_missing,
+            local::scan_local,
             stream::media_base_url,
             library::list_playlists,
             library::create_playlist,
@@ -125,6 +134,7 @@ fn main() {
             youtube::youtube_status,
             youtube::youtube_jobs,
             youtube::youtube_import,
+            youtube::youtube_retry,
             youtube::youtube_cancel,
             youtube::youtube_cancel_all,
             youtube::youtube_clear_finished,

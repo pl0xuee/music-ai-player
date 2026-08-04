@@ -204,7 +204,7 @@ class Plan:
 
 
 class Bank:
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, only: list[str] | None = None):
         if not path.exists():
             die(f"prompt bank not found: {path}")
         with path.open("rb") as f:
@@ -218,6 +218,22 @@ class Bank:
 
         if not self.genres:
             die("prompt bank has no [[genre]] entries")
+
+        # Restrict the run to the named styles, if any were asked for. Matching
+        # is case-insensitive because these names come from a UI, and an
+        # unknown one is fatal rather than silently ignored: a run that quietly
+        # used every genre after being told to use one would be discovered only
+        # after an hour of GPU time.
+        if only:
+            wanted = {name.strip().lower() for name in only if name.strip()}
+            known = {g["name"].lower(): g["name"] for g in self.genres}
+            missing = sorted(wanted - known.keys())
+            if missing:
+                die(
+                    f"unknown genre(s): {', '.join(missing)}. "
+                    f"Available: {', '.join(sorted(known.values()))}"
+                )
+            self.genres = [g for g in self.genres if g["name"].lower() in wanted]
 
         self.key_names = [k["name"] for k in keys] or ["A Minor"]
         self.key_weights = [k.get("weight", 1) for k in keys] or [1]
@@ -483,7 +499,7 @@ def wait_for(task_id: str) -> tuple[int, list[str]]:
 def run(args: argparse.Namespace) -> int:
     db = open_db(Path(args.db))
     out_dir = Path(args.out)
-    bank = Bank(BANK_PATH)
+    bank = Bank(BANK_PATH, args.genre)
 
     duration = args.duration or bank.defaults.get("audio_duration", 200)
     model = args.model or bank.defaults.get("model", "acestep-v15-turbo")
@@ -681,6 +697,13 @@ def main() -> int:
     p.add_argument("--db", default=str(DEFAULT_DB))
     p.add_argument("--out", default=str(DEFAULT_OUT))
     p.add_argument("--seed", type=int, help="seed the planner for reproducibility")
+    p.add_argument(
+        "--genre",
+        action="append",
+        metavar="NAME",
+        help="restrict the run to this [[genre]] from prompts.toml; repeatable. "
+             "Omitted, every genre is used at its configured weight.",
+    )
 
     args = p.parse_args()
 

@@ -440,6 +440,13 @@ pub struct DownloadJob {
     pub detail: String,
     pub playlist_id: Option<i64>,
     pub whole_playlist: bool,
+    /// Where the audio is written, when the user picked somewhere.
+    ///
+    /// `None` means the library's own `tracks/` directory. Carried per job
+    /// rather than held as one global setting so a queue built across two
+    /// different choices still puts each item where it was asked to go — and so
+    /// a retry lands in the same place as the attempt it replaces.
+    pub destination: Option<String>,
     /// Rows committed by this job.
     pub added: u32,
     /// Entries already in the library.
@@ -562,6 +569,8 @@ struct Request {
     url: String,
     playlist_id: Option<i64>,
     whole_playlist: bool,
+    /// Where to write the audio; `None` is the library's own `tracks/`.
+    destination: Option<String>,
 }
 
 struct Queue {
@@ -673,6 +682,7 @@ impl Downloads {
         text: &str,
         playlist_id: Option<i64>,
         whole_playlist: bool,
+        destination: Option<String>,
     ) -> Result<ImportReport, String> {
         let conn = self.lib.connect()?;
         let mut report = ImportReport::default();
@@ -734,6 +744,7 @@ impl Downloads {
                     },
                     playlist_id,
                     whole_playlist: expands,
+                    destination: destination.clone(),
                     added: 0,
                     skipped: 0,
                     failed: 0,
@@ -745,6 +756,7 @@ impl Downloads {
                         url: input.clone(),
                         playlist_id,
                         whole_playlist: expands,
+                        destination: destination.clone(),
                     },
                 );
                 guard.pending.push_back(job_id);
@@ -829,6 +841,49 @@ impl Downloads {
     }
 
     /// Forget everything that has finished, so the panel does not grow forever.
+    /// Queue a settled job's URL again, dropping the attempt it replaces.
+    ///
+    /// A download fails for reasons that pass: the network drops, YouTube rate
+    /// limits, a postprocessor is missing a module. None of those are reasons
+    /// to make the user find and paste the link a second time.
+    ///
+    /// The old entry is removed rather than left beside the new one, so the
+    /// queue shows one row per thing the user asked for instead of a history of
+    /// attempts. Only settled jobs qualify — retrying something still running
+    /// would leave two yt-dlp processes writing the same file.
+    ///
+    /// Re-enqueueing goes through [`Self::enqueue`], which checks the library
+    /// first. A job that failed wrote no row, so it queues; one that actually
+    /// succeeded comes back as a duplicate and is refused, which is the honest
+    /// answer to retrying something already held.
+    pub fn retry<R: Runtime>(&self, app: &AppHandle<R>, job_id: u64) -> Result<ImportReport, String> {
+        let (url, playlist_id, whole_playlist, destination) = {
+            let mut guard = self.lock();
+            let Some(job) = guard.jobs.iter().find(|j| j.id == job_id) else {
+                return Err("that download is no longer in the queue".into());
+            };
+            if !job.phase.settled() {
+                return Err("that download has not finished yet".into());
+            }
+            let taken = (
+                job.url.clone(),
+                job.playlist_id,
+                job.whole_playlist,
+                job.destination.clone(),
+            );
+            guard.jobs.retain(|j| j.id != job_id);
+            guard.requests.remove(&job_id);
+            guard.cancelled.remove(&job_id);
+            taken
+        };
+
+        // Published before the new job is queued so the row disappears even if
+        // the re-enqueue then fails; otherwise a rejected retry would leave the
+        // old attempt looking as though it had been picked up.
+        self.publish(app);
+        self.enqueue(app, &url, playlist_id, whole_playlist, destination)
+    }
+
     pub fn clear_finished<R: Runtime>(&self, app: &AppHandle<R>) {
         {
             let mut guard = self.lock();
@@ -877,12 +932,19 @@ impl Downloads {
     }
 
     fn run_job<R: Runtime>(&self, app: &AppHandle<R>, job_id: u64) {
-        let Some((url, playlist_id, whole_playlist)) = ({
+        let Some((url, playlist_id, whole_playlist, destination)) = ({
             let guard = self.lock();
             guard
                 .requests
                 .get(&job_id)
-                .map(|r| (r.url.clone(), r.playlist_id, r.whole_playlist))
+                .map(|r| {
+                    (
+                        r.url.clone(),
+                        r.playlist_id,
+                        r.whole_playlist,
+                        r.destination.clone(),
+                    )
+                })
         }) else {
             return;
         };
@@ -907,7 +969,15 @@ impl Downloads {
         });
         self.publish(app);
 
-        match self.spawn_and_pump(app, job_id, &ytdlp, &url, playlist_id, whole_playlist) {
+        match self.spawn_and_pump(
+            app,
+            job_id,
+            &ytdlp,
+            &url,
+            playlist_id,
+            whole_playlist,
+            destination.as_deref(),
+        ) {
             Ok(()) => {}
             Err(message) => {
                 self.settle(app, job_id, JobPhase::Failed, message);
@@ -928,8 +998,21 @@ impl Downloads {
         url: &str,
         playlist_id: Option<i64>,
         whole_playlist: bool,
+        destination: Option<&str>,
     ) -> Result<(), String> {
-        let tracks_dir = self.lib.tracks_dir();
+        // Where the finished audio lands. A chosen folder is created if it is
+        // not there yet, and a folder that cannot be created is an error rather
+        // than a silent fall back to the library — a download the user believes
+        // went somewhere else is worse than one that refused to start.
+        let tracks_dir = match destination {
+            None => self.lib.tracks_dir(),
+            Some(dir) => {
+                let path = PathBuf::from(dir);
+                std::fs::create_dir_all(&path)
+                    .map_err(|e| format!("cannot write to {}: {e}", path.display()))?;
+                path
+            }
+        };
         let incoming = self.incoming_dir();
         std::fs::create_dir_all(&incoming)
             .map_err(|e| format!("cannot create {}: {e}", incoming.display()))?;
@@ -949,13 +1032,39 @@ impl Downloads {
 
         let mut cmd = Command::new(ytdlp);
         cmd.args([
+            // Best audio-only stream, and then *keep* it.
+            //
+            // Forcing mp3 here used to cost a generation: YouTube serves Opus
+            // at around 160 kbps, and re-encoding that to mp3 — however high
+            // the bitrate — only ever subtracts. `--audio-format best` remuxes
+            // into a fitting container without touching the samples, so what
+            // lands on disk is bit-for-bit what YouTube sent.
+            //
+            // The library has not cared about the extension since the media
+            // server started serving files itself; it maps opus, m4a, flac and
+            // the rest to their own content types, and GStreamer decodes all of
+            // them. `--audio-quality` still applies to the formats that do get
+            // re-encoded, so it stays at best.
+            "-f",
+            "bestaudio/best",
             "-x",
             "--audio-format",
-            "mp3",
+            "best",
             "--audio-quality",
             "0",
             "--embed-metadata",
-            "--embed-thumbnail",
+            // No `--embed-thumbnail`. Writing cover art into Opus or M4A needs
+            // the `mutagen` Python module, which mp3 did not, so keeping the
+            // native codec turned an optional nicety into a hard dependency —
+            // and a missing one fails the *whole* postprocessing step. The file
+            // is extracted correctly and then `after_move` never fires, so the
+            // importer is never told where it landed and no row is written:
+            // a download that visibly succeeded and silently imported nothing.
+            //
+            // Nothing in this player displays artwork, so this only ever cost
+            // bytes. Verified against a real download: without it the file
+            // lands, the path is printed, and no .webp/.png debris is left in
+            // the library directory.
             "--newline",
             "--no-colors",
             // `--print` implies quiet; both of these undo just enough of that to
@@ -1328,8 +1437,20 @@ pub fn youtube_import(
     text: String,
     playlist_id: Option<i64>,
     whole_playlist: bool,
+    destination: Option<String>,
 ) -> Result<ImportReport, String> {
-    downloads.enqueue(&app, &text, playlist_id, whole_playlist)
+    downloads.enqueue(&app, &text, playlist_id, whole_playlist, destination)
+}
+
+/// Queue a failed or cancelled download again. Async: `enqueue` opens the
+/// database to check what is already held.
+#[tauri::command(async)]
+pub fn youtube_retry(
+    app: AppHandle,
+    downloads: State<'_, Downloads>,
+    job_id: u64,
+) -> Result<ImportReport, String> {
+    downloads.retry(&app, job_id)
 }
 
 #[tauri::command]
@@ -1652,7 +1773,7 @@ wait
         spawn_worker(downloads.clone(), handle.clone());
 
         let report = downloads
-            .enqueue(&handle, "https://youtu.be/aaaaaaaaaaa", None, false)
+            .enqueue(&handle, "https://youtu.be/aaaaaaaaaaa", None, false, None)
             .expect("enqueue");
         assert_eq!(report.queued, 1);
         let job_id = report.lines[0].job_id.expect("job id");
@@ -1744,7 +1865,7 @@ exit 1
         spawn_worker(downloads.clone(), handle.clone());
 
         let report = downloads
-            .enqueue(&handle, "https://youtu.be/aaaaaaaaaaa", None, false)
+            .enqueue(&handle, "https://youtu.be/aaaaaaaaaaa", None, false, None)
             .expect("enqueue");
         let job_id = report.lines[0].job_id.expect("job id");
 
@@ -1813,6 +1934,7 @@ exit 0
                 "https://www.youtube.com/watch?v=aaaaaaaaaaa",
                 Some(playlist),
                 false,
+                None,
             )
             .expect("enqueue");
 
@@ -1860,7 +1982,7 @@ exit 0
 
         // "Me at the zoo" — the first video uploaded to YouTube, 19 seconds.
         let report = downloads
-            .enqueue(&handle, "https://youtu.be/jNQXAC9IVRw", None, false)
+            .enqueue(&handle, "https://youtu.be/jNQXAC9IVRw", None, false, None)
             .expect("enqueue");
         let job_id = report.lines[0].job_id.expect("job id");
 

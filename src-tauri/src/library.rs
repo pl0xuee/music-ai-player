@@ -33,6 +33,11 @@ const TRACK_COLUMNS: &str = "id, title, genre, bpm, key_scale, prompt, duration,
 pub const SOURCE_GENERATED: &str = "generated";
 /// Value of `tracks.source` for rows imported from YouTube.
 pub const SOURCE_YOUTUBE: &str = "youtube";
+/// Value of `tracks.source` for audio files that were already on this machine.
+///
+/// These rows point *outside* the library directory and nothing is copied: the
+/// file stays where the user keeps it, and deleting the row leaves it alone.
+pub const SOURCE_LOCAL: &str = "local";
 
 /// A playable row. Only `status = 'ready'` rows are ever handed to the UI, so
 /// `status` / `task_id` / `error` are not part of this struct.
@@ -629,6 +634,77 @@ fn source_path<R: Runtime>(
     Ok(Some(path))
 }
 
+/// What a cleanup pass found.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PruneReport {
+    /// Ready rows whose file was checked.
+    pub checked: usize,
+    /// Rows dropped because the file behind them has gone.
+    pub removed: usize,
+}
+
+/// Drop every ready row whose audio file is no longer on disk.
+///
+/// Files leave without the library being told: a scanned folder is tidied, an
+/// external disk is unplugged, test downloads are deleted by hand. Those rows
+/// are already unplayable — a deck skips them and moves on — but they still
+/// fill the list, count toward the shuffle bag and sit in playlists.
+///
+/// Only `ready` rows are considered. A pending or generating row has no file
+/// *yet*, and deleting it would cancel work in flight by proxy.
+///
+/// Deletion cascades into `playlist_items` through the schema's foreign key,
+/// which is the correct outcome: a playlist entry pointing at nothing is not
+/// worth keeping either.
+#[tauri::command(async)]
+pub fn prune_missing(lib: State<'_, Library>) -> Result<PruneReport, String> {
+    let Some(conn) = lib.open()? else {
+        return Ok(PruneReport {
+            checked: 0,
+            removed: 0,
+        });
+    };
+
+    let rows: Vec<(i64, String)> = {
+        let mut stmt = conn
+            .prepare("SELECT id, path FROM tracks WHERE status = 'ready' AND path IS NOT NULL")
+            .map_err(|e| e.to_string())?;
+        let mapped = stmt
+            .query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)))
+            .map_err(|e| e.to_string())?;
+        mapped.collect::<Result<_, _>>().map_err(|e| e.to_string())?
+    };
+
+    let checked = rows.len();
+    let gone: Vec<i64> = rows
+        .into_iter()
+        .filter(|(_, path)| !Path::new(path).is_file())
+        .map(|(id, _)| id)
+        .collect();
+
+    if gone.is_empty() {
+        return Ok(PruneReport {
+            checked,
+            removed: 0,
+        });
+    }
+
+    // One transaction, so a failure part-way leaves the library exactly as it
+    // was rather than half-pruned.
+    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+    for id in &gone {
+        tx.execute("DELETE FROM tracks WHERE id = ?1", rusqlite::params![id])
+            .map_err(|e| format!("cannot remove track {id}: {e}"))?;
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+
+    Ok(PruneReport {
+        checked,
+        removed: gone.len(),
+    })
+}
+
 #[tauri::command(async)]
 pub fn track_source(
     app: AppHandle,
@@ -667,6 +743,63 @@ pub fn find_by_video_id(conn: &Connection, video_id: &str) -> Result<Option<i64>
         rusqlite::Error::QueryReturnedNoRows => Ok(None),
         other => Err(other.to_string()),
     })
+}
+
+/// Row id of a track already pointing at this exact path, if there is one.
+///
+/// How a re-scan of the same folder stays idempotent. Matching on the path
+/// rather than on the audio means a file the user has since renamed comes in
+/// again as a second row, which is the safer way round: a duplicate is visible
+/// and deletable, a silently skipped file looks like the scanner is broken.
+pub fn find_by_path(conn: &Connection, path: &str) -> Result<Option<i64>, String> {
+    conn.query_row(
+        "SELECT id FROM tracks WHERE path = ?1",
+        rusqlite::params![path],
+        |row| row.get(0),
+    )
+    .map(Some)
+    .or_else(|e| match e {
+        rusqlite::Error::QueryReturnedNoRows => Ok(None),
+        other => Err(other.to_string()),
+    })
+}
+
+/// Everything worth knowing about an audio file found on disk.
+#[derive(Debug, Clone)]
+pub struct LocalTrack {
+    pub title: String,
+    /// The `artist` tag, or `None`. Shown where an import shows its channel.
+    pub artist: Option<String>,
+    /// The `genre` tag if the file carries one, so the genre filter is useful
+    /// on a real music collection rather than listing everything as "local".
+    pub genre: Option<String>,
+    pub duration: Option<f64>,
+    pub path: String,
+}
+
+/// Commit a file that is already on disk as a playable row.
+///
+/// Mirrors [`insert_imported`], including its reason for existing: `status` is
+/// set to `ready` only here, and only after the caller has confirmed the file
+/// is really there and really has audio in it.
+pub fn insert_local(conn: &Connection, t: &LocalTrack) -> Result<i64, String> {
+    conn.execute(
+        &format!(
+            "INSERT INTO tracks
+                 (title, genre, bpm, key_scale, prompt, duration, status, path,
+                  created_at, source, video_id, url, uploader)
+             VALUES (?1, ?2, 0, '', '', ?3, 'ready', ?4, {NOW}, '{SOURCE_LOCAL}', NULL, NULL, ?5)"
+        ),
+        rusqlite::params![
+            t.title,
+            t.genre.as_deref().unwrap_or(SOURCE_LOCAL),
+            t.duration,
+            t.path,
+            t.artist,
+        ],
+    )
+    .map_err(|e| format!("cannot record {}: {e}", t.path))?;
+    Ok(conn.last_insert_rowid())
 }
 
 /// Every `video_id` already imported. Handed to `yt-dlp --download-archive` so
@@ -1314,6 +1447,7 @@ mod tests {
             "library_stats",
             "genres",
             "track_source",
+            "prune_missing",
             "list_playlists",
             "list_playlist_items",
         ];

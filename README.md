@@ -5,10 +5,12 @@ instrumental, endless-feeling. It is a Tauri app with a SQLite library, an
 8-second equal-power crossfade between two decks, a shuffle bag that plays the
 whole library before it repeats anything, playlists, and a reactive visualizer.
 
-Two things can fill the library: an **ACE-Step generator** that renders original
-music on the local GPU, and a **YouTube importer** built on `yt-dlp`. Both write
-mp3s into the same directory and rows into the same database, so once a track is
-in the library nothing downstream cares where it came from.
+Three things can fill the library: an **ACE-Step generator** that renders original
+music on the local GPU, a **YouTube importer** built on `yt-dlp`, and a **folder
+scan** that adopts audio already on the machine. The first two write files into
+the library directory; the third leaves them where they are and only records
+where to find them. All three write rows into the same database, so once a track
+is in the library nothing downstream cares where it came from.
 
 ```
   engine/    ──generate──▶  library/library.db  ──▶  Tauri app
@@ -89,9 +91,15 @@ Not accepted: channel URLs, search terms, plain text.
 
 What happens per item:
 
-- `yt-dlp -x --audio-format mp3 --audio-quality 0`, with metadata and the
-  thumbnail embedded into the file.
-- Lands in `library/tracks/` as `<video-id>-<title>.mp3`.
+- `yt-dlp -f bestaudio/best -x --audio-format best`, which keeps the stream
+  YouTube actually served — usually Opus around 160 kbps — instead of re-encoding
+  it to mp3. Transcoding only ever subtracts, and the file is roughly half the
+  size for the same audio.
+- No cover art is embedded. Writing it into Opus or M4A needs the `mutagen`
+  Python module, and a missing one fails the whole postprocessing step, so the
+  file lands but the importer is never told where. Nothing here shows artwork.
+- Lands in `library/tracks/` as `<video-id>-<title>.<ext>`; the extension follows
+  the source codec, and the media server maps each one to its own content type.
 - A row is inserted with `source = 'youtube'`, `genre = 'youtube'`, the real
   duration measured by `ffprobe`, plus `video_id`, `url` and `uploader`.
 - Duration matters: the crossfade schedule is computed from it, which is why it

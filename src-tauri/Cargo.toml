@@ -12,6 +12,23 @@ tauri-build = { version = "2", features = [] }
 # PNG icon for the tray at runtime.
 tauri = { version = "2", features = ["protocol-asset", "tray-icon", "image-png"] }
 tauri-plugin-global-shortcut = "2"
+# The folder picker for adopting local audio, and for choosing where downloads
+# land. Drag-and-drop needs nothing.
+#
+# `xdg-portal` rather than the default `gtk3`. The default builds rfd's own
+# GtkFileChooser, whose sidebar is only ever the XDG user directories — a NAS
+# share, an external disk, anything under /mnt is unreachable without knowing
+# to dig through "Other Locations", and mounted network places are not listed
+# at all. Going through xdg-desktop-portal hands the request to the desktop's
+# real file dialog (KDE's here), which lists the same places the file manager
+# does, including the network.
+tauri-plugin-dialog = { version = "2", default-features = false, features = ["xdg-portal"] }
+
+# Self-update from the GitHub release. AppImage is the shipping target: the
+# updater swaps the running image in place, and `process` relaunches it so the
+# new one is what comes back.
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
 serde = { version = "1", features = ["derive"] }
 # yt-dlp reports each item as a one-line JSON object on stdout; see youtube.rs.
 serde_json = "1"
