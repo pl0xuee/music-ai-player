@@ -69,8 +69,16 @@ jobs:
 
       # Build only. Publishing is done below, because the AppImage has to be
       # repaired after it is built and before anything signs it.
+      # The key is needed here even though the real signing happens after the
+      # repack: `createUpdaterArtifacts` makes the build sign as it bundles, and
+      # it fails outright with a pubkey in the config and no private key. The
+      # signatures it writes are for the pre-repack AppImage and are replaced
+      # below.
       - name: Build the bundles
         uses: tauri-apps/tauri-action@v0
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: ""
           args: --bundles appimage,deb
