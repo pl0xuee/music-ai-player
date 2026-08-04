@@ -12,7 +12,7 @@
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
@@ -264,7 +264,7 @@ fn file_label(path: &Path) -> String {
 /// measured rather than guessed; a file with no readable duration is refused
 /// outright instead of becoming a row that stalls a deck at the handover.
 fn probe(file: &Path) -> Option<LocalTrack> {
-    let out = Command::new("ffprobe")
+    let out = crate::proc::external("ffprobe")
         .args([
             "-v",
             "error",

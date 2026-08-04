@@ -154,6 +154,93 @@ pub struct Proc {
     pub pgid: i32,
 }
 
+// ---------------------------------------------------------------------------
+// Bundle environment
+// ---------------------------------------------------------------------------
+
+/// Colon-separated search paths an AppImage points at its own bundled copies.
+///
+/// The `_1_0` spellings are not redundant: the GStreamer bundling hook exports
+/// both, and a child that reads only the suffixed one would still be steered
+/// into the bundle. Taken from the environment of a running AppImage rather
+/// than from memory.
+const BUNDLE_PATH_LISTS: [&str; 5] = [
+    "LD_LIBRARY_PATH",
+    "GST_PLUGIN_SYSTEM_PATH",
+    "GST_PLUGIN_SYSTEM_PATH_1_0",
+    "GST_PLUGIN_PATH",
+    "GST_PLUGIN_PATH_1_0",
+];
+
+/// Single-file variables pointing into the bundle.
+const BUNDLE_FILES: [&str; 2] = ["GST_PLUGIN_SCANNER", "GST_PLUGIN_SCANNER_1_0"];
+
+/// A `Command` for a tool that belongs to the host, not to this bundle.
+pub fn external(program: impl AsRef<std::ffi::OsStr>) -> Command {
+    let mut cmd = Command::new(program);
+    unbundle(&mut cmd);
+    cmd
+}
+
+/// Remove this bundle's library paths from a child's environment.
+///
+/// An AppImage runs its own binary against the libraries it ships by exporting
+/// `LD_LIBRARY_PATH`, and a child inherits it. Every tool here is the host's —
+/// `ffprobe`, `ffmpeg`, `yt-dlp`, `python` — so they get loaded against a
+/// mixture of the host's libraries and the bundle's, which is a combination
+/// nobody built or tested. On this machine that was:
+///
+///     ffprobe: symbol lookup error: /usr/lib/libopenmpt.so.0:
+///              undefined symbol: mpg123_open_handle64
+///
+/// The host's `libopenmpt` resolved against the bundle's older `libmpg123`.
+/// `ffprobe` died, and because a probe that cannot run is indistinguishable
+/// from a file that is not audio, a scan of a perfectly good folder reported
+/// "no audio in …" for every track in it. `yt-dlp` reaches `ffmpeg` the same
+/// way, so imports broke identically and just as silently.
+///
+/// Only entries inside `APPDIR` are dropped, so anything the user set for their
+/// own reasons survives. Outside an AppImage there is no `APPDIR` and this does
+/// nothing at all.
+pub fn unbundle(cmd: &mut Command) {
+    let Some(appdir) = std::env::var_os("APPDIR") else {
+        return;
+    };
+    let appdir = std::path::PathBuf::from(appdir);
+
+    for var in BUNDLE_PATH_LISTS {
+        let Some(value) = std::env::var_os(var) else {
+            continue;
+        };
+        match outside_bundle(&value, &appdir) {
+            Some(kept) => cmd.env(var, kept),
+            None => cmd.env_remove(var),
+        };
+    }
+
+    for var in BUNDLE_FILES {
+        if let Some(value) = std::env::var_os(var) {
+            if std::path::Path::new(&value).starts_with(&appdir) {
+                cmd.env_remove(var);
+            }
+        }
+    }
+}
+
+/// The entries of a search path that do not live inside `appdir`, or `None`
+/// when that leaves nothing — in which case the variable should be unset rather
+/// than set to the empty string, which some loaders read as "the current
+/// directory" rather than "no preference".
+fn outside_bundle(value: &std::ffi::OsStr, appdir: &std::path::Path) -> Option<std::ffi::OsString> {
+    let kept: Vec<_> = std::env::split_paths(value)
+        .filter(|entry| !entry.as_os_str().is_empty() && !entry.starts_with(appdir))
+        .collect();
+    if kept.is_empty() {
+        return None;
+    }
+    std::env::join_paths(kept).ok()
+}
+
 /// Shorthand for the shared slot a supervised child lives in.
 ///
 /// The `Child` deliberately stays inside the mutex for its whole life: reaping
@@ -346,7 +433,49 @@ pub fn still_running(pid: i32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsString;
+    use std::path::Path;
     use std::process::Stdio;
+
+    /// The bug this exists to prevent: the bundle's own library directory
+    /// reaching `ffprobe`, which then loads a mixture of the host's libraries
+    /// and ours and dies on a missing symbol. A scan of good files then reports
+    /// every one of them as "no audio".
+    #[test]
+    fn drops_bundle_entries_from_a_search_path() {
+        let appdir = Path::new("/tmp/.mount_abc");
+        let value = OsString::from("/tmp/.mount_abc/usr/lib:/usr/lib:/tmp/.mount_abc/lib");
+        assert_eq!(
+            outside_bundle(&value, appdir),
+            Some(OsString::from("/usr/lib"))
+        );
+    }
+
+    /// A path made up entirely of bundle entries must unset the variable. An
+    /// empty `LD_LIBRARY_PATH` is not the same as an absent one — the loader
+    /// reads the empty entry as the current directory.
+    #[test]
+    fn unsets_a_search_path_that_was_all_bundle() {
+        let appdir = Path::new("/tmp/.mount_abc");
+        let value = OsString::from("/tmp/.mount_abc/usr/lib:/tmp/.mount_abc/lib");
+        assert_eq!(outside_bundle(&value, appdir), None);
+    }
+
+    /// Anything the user set for their own reasons is theirs to keep.
+    #[test]
+    fn keeps_paths_that_are_not_ours() {
+        let appdir = Path::new("/tmp/.mount_abc");
+        let value = OsString::from("/opt/cuda/lib64:/usr/local/lib");
+        assert_eq!(outside_bundle(&value, appdir), Some(value.clone()));
+    }
+
+    /// A prefix match on the string would strip this; a path match must not.
+    #[test]
+    fn does_not_strip_a_directory_that_merely_starts_with_the_same_text() {
+        let appdir = Path::new("/tmp/.mount_abc");
+        let value = OsString::from("/tmp/.mount_abcdef/lib");
+        assert_eq!(outside_bundle(&value, appdir), Some(value.clone()));
+    }
 
     #[test]
     fn strips_colour_codes() {

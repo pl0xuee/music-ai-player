@@ -21,7 +21,7 @@
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
@@ -325,7 +325,7 @@ fn ytdlp_version(bin: &Path) -> Option<String> {
         }
     }
 
-    let version = Command::new(bin)
+    let version = crate::proc::external(bin)
         .arg("--version")
         .stdin(Stdio::null())
         .output()
@@ -382,7 +382,7 @@ impl Tools {
 /// value that is a few seconds out makes the handover start in the wrong place;
 /// measure the file we actually wrote.
 fn probe_duration(file: &Path) -> Option<f64> {
-    let out = Command::new("ffprobe")
+    let out = crate::proc::external("ffprobe")
         .args([
             "-v",
             "error",
@@ -1030,7 +1030,7 @@ impl Downloads {
                 .map_err(|e| format!("cannot write {}: {e}", archive.display()))?;
         }
 
-        let mut cmd = Command::new(ytdlp);
+        let mut cmd = crate::proc::external(ytdlp);
         cmd.args([
             // Best audio-only stream, and then *keep* it.
             //

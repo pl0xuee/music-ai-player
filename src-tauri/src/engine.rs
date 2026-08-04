@@ -21,7 +21,7 @@ use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -696,7 +696,7 @@ impl Engine {
             return Ok(self.refresh_status());
         }
 
-        let mut cmd = Command::new(&self.paths.start_script);
+        let mut cmd = crate::proc::external(&self.paths.start_script);
         cmd.current_dir(&self.paths.project_root)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -804,7 +804,7 @@ impl Engine {
         let seq = self.run_seq.fetch_add(1, Ordering::SeqCst) + 1;
         self.cancelling.store(false, Ordering::SeqCst);
 
-        let mut cmd = Command::new(&self.paths.python);
+        let mut cmd = crate::proc::external(&self.paths.python);
         cmd.current_dir(&self.paths.project_root)
             // -u plus PYTHONUNBUFFERED: without them CPython block-buffers a
             // pipe and progress lines arrive one whole track late.
