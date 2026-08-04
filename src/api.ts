@@ -54,6 +54,19 @@ export function markPlayed(id: number): Promise<void> {
 }
 
 /**
+ * How many sources stay resident.
+ *
+ * Two decks are ever loaded at once; the third slot absorbs a preload racing a
+ * click without evicting a URL a deck is still opening. Kept deliberately tight
+ * because each entry is a whole file in memory — a 2-hour 272 MB mix really does
+ * cost 272 MB here — so this is the ceiling on that, not a performance cache.
+ */
+const SOURCE_CACHE_LIMIT = 3;
+
+/** Track id -> object URL, in least-recently-requested order. */
+const sourceCache = new Map<number, string>();
+
+/**
  * Resolve a track to a URL the `<audio>` element can load.
  *
  * The Rust command hands back an absolute filesystem path and simultaneously
@@ -61,11 +74,69 @@ export function markPlayed(id: number): Promise<void> {
  * it into the custom-protocol URL for the current platform (`asset://localhost/…`
  * on Linux and macOS, `http://asset.localhost/…` on Windows). Reading the path
  * directly would be blocked — Tauri v2 only serves files through this protocol.
+ *
+ * That URL cannot go straight onto a media element on Linux. WebKitGTK loads
+ * `<audio>`/`<video>` through GStreamer, which resolves the source itself and
+ * has no handler for WebKit's custom schemes: `asset://` answers `fetch` and
+ * range requests perfectly, yet every media element built on it fails on load
+ * with `MEDIA_ERR_SRC_NOT_SUPPORTED` and never reports a duration. Measured on
+ * webkit2gtk 2.52.5, for every URL shape — encoded path, literal path, no host,
+ * and `http://asset.localhost` — with and without `crossOrigin`. That is the
+ * whole reason this player had never made a sound on Linux.
+ *
+ * So the bytes are fetched here, where the asset protocol does work, and handed
+ * over as an object URL, which the media element loads normally. The library is
+ * local, so this is a disk read, not a download: 20 MB resolves in ~40 ms.
+ *
+ * The cost is that this buffers the *whole* file before the deck can start, and
+ * that scales badly: a 272 MB two-hour mix measured 5.6 s to first sound and put
+ * the web process at 537 MB resident. Streaming it over a loopback HTTP server
+ * with range support would fix both — WebKit's media backend handles `http://`
+ * happily — and that is the right shape for this eventually.
  */
 export async function trackSourceUrl(id: number): Promise<string | null> {
   if (!IN_TAURI) return null;
+
+  // Asked every time, even on a cache hit: this is the call that checks the
+  // file is still on disk, and a row whose file has gone has to answer null
+  // rather than play on out of memory.
   const path = await invoke<string | null>("track_source", { id });
-  return path === null ? null : convertFileSrc(path);
+  if (path === null) {
+    const stale = sourceCache.get(id);
+    if (stale !== undefined) {
+      sourceCache.delete(id);
+      URL.revokeObjectURL(stale);
+    }
+    return null;
+  }
+
+  const cached = sourceCache.get(id);
+  if (cached !== undefined) {
+    // Re-insert so the deck that just asked for it is the last to be evicted.
+    sourceCache.delete(id);
+    sourceCache.set(id, cached);
+    return cached;
+  }
+
+  const response = await fetch(convertFileSrc(path));
+  if (!response.ok) {
+    throw new Error(`the asset protocol answered ${response.status} for "${path}"`);
+  }
+  const url = URL.createObjectURL(await response.blob());
+  sourceCache.set(id, url);
+
+  // Bounded, because a long session would otherwise hold every track it has
+  // played in memory. Revoking only stops *new* loads from the URL; a deck that
+  // already opened it keeps its data.
+  while (sourceCache.size > SOURCE_CACHE_LIMIT) {
+    const oldest = sourceCache.keys().next();
+    if (oldest.done === true) break;
+    const stale = sourceCache.get(oldest.value);
+    sourceCache.delete(oldest.value);
+    if (stale !== undefined) URL.revokeObjectURL(stale);
+  }
+
+  return url;
 }
 
 // ---------------------------------------------------------------------------
