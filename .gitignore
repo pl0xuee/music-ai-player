@@ -27,3 +27,13 @@ venv*/
 *.swp
 .idea/
 .vscode/
+
+# Secrets. The updater signing key lives in ~/.config/music-ai-player/ and must
+# stay there — anyone holding it can sign an update this app will install
+# without complaint. These rules exist so a stray copy in the working tree
+# cannot be committed by accident.
+*.key
+*.pem
+.env
+.env.*
+!.env.example
