@@ -8,13 +8,20 @@ import {
   generationCancel,
   generationStart,
   generationState,
+  generationStyles,
   onEngineLog,
   onEngineStatus,
   onGeneration,
   onGenerationLog,
 } from "../api";
 import { IDLE_RUN, OFFLINE_ENGINE } from "../types";
-import type { EngineStatus, GenerationProgress, GenTarget, LogLine } from "../types";
+import type {
+  EngineStatus,
+  GenerationProgress,
+  GenStyle,
+  GenTarget,
+  LogLine,
+} from "../types";
 import { hms } from "../format";
 
 interface Props {
@@ -50,6 +57,13 @@ const PRESETS: Preset[] = [
 const LOG_LIMIT = 200;
 
 export function GenerationPanel({ open, onClose, pending, onLibraryChanged, onRunChange }: Props) {
+  /**
+   * Styles to restrict the run to. Empty means every style at the weights the
+   * prompt bank gives them, which is what an untargeted run has always done —
+   * so the default costs the user no decision.
+   */
+  const [styles, setStyles] = useState<string[]>([]);
+  const [available, setAvailable] = useState<GenStyle[]>([]);
   const [engine, setEngine] = useState<EngineStatus>(OFFLINE_ENGINE);
   const [run, setRun] = useState<GenerationProgress>(IDLE_RUN);
   const [log, setLog] = useState<LogLine[]>([]);
@@ -130,6 +144,11 @@ export function GenerationPanel({ open, onClose, pending, onLibraryChanged, onRu
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose, open]);
 
+  // Read on every open, so editing prompts.toml is picked up without a restart.
+  useEffect(() => {
+    if (open) void generationStyles().then(setAvailable);
+  }, [open]);
+
   // -- actions --------------------------------------------------------------
 
   const guard = useCallback(async (action: () => Promise<unknown>) => {
@@ -146,9 +165,9 @@ export function GenerationPanel({ open, onClose, pending, onLibraryChanged, onRu
 
   const start = useCallback(
     (target: GenTarget) => {
-      void guard(() => generationStart(target));
+      void guard(() => generationStart(target, styles));
     },
-    [guard],
+    [guard, styles],
   );
 
   // -- derived --------------------------------------------------------------
@@ -227,6 +246,51 @@ export function GenerationPanel({ open, onClose, pending, onLibraryChanged, onRu
               </>
             )}
           </Section>
+
+          {available.length > 0 && (
+            <Section label="Style">
+              <div className="gp-presets" role="group" aria-label="Styles to generate">
+                <button
+                  type="button"
+                  className={styles.length === 0 ? "chip is-on" : "chip"}
+                  aria-pressed={styles.length === 0}
+                  onClick={() => setStyles([])}
+                  disabled={active}
+                >
+                  Everything
+                </button>
+                {available.map((style) => {
+                  const on = styles.includes(style.name);
+                  return (
+                    <button
+                      key={style.name}
+                      type="button"
+                      className={on ? "chip is-on" : "chip"}
+                      aria-pressed={on}
+                      disabled={active}
+                      onClick={() =>
+                        setStyles((current) =>
+                          current.includes(style.name)
+                            ? current.filter((name) => name !== style.name)
+                            : [...current, style.name],
+                        )
+                      }
+                    >
+                      {style.name}
+                      <span className="chip-note">
+                        {on ? `${style.bpm[0]}–${style.bpm[1]} BPM` : `${style.share}%`}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+              <p className="gp-note">
+                {styles.length === 0
+                  ? "Every style, mixed at the shares shown — one coherent station sound rather than a genre sampler."
+                  : `Only ${styles.join(", ")}. Tempo and instrumentation come from the prompt bank; everything else about the run is unchanged.`}
+              </p>
+            </Section>
+          )}
 
           <Section label="Target">
             <div className="gp-presets" role="radiogroup" aria-label="Generation target">

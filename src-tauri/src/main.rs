@@ -143,6 +143,7 @@ fn main() {
             engine::engine_start,
             engine::engine_stop,
             engine::generation_state,
+            engine::generation_styles,
             engine::generation_start,
             engine::generation_cancel,
         ])

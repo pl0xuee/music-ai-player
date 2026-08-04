@@ -67,6 +67,15 @@ export function meaningfulGenre(track: Track): string | null {
   return genre;
 }
 
+/** One style the prompt bank can render. Mirrors `GenStyle` in `engine.rs`. */
+export interface GenStyle {
+  name: string;
+  /** Share of an untargeted run, as a percentage. */
+  share: number;
+  /** The tempo range this style is written for, `[low, high]`. */
+  bpm: [number, number];
+}
+
 // ---------------------------------------------------------------------------
 // Local files — mirrors `src-tauri/src/local.rs`
 // ---------------------------------------------------------------------------

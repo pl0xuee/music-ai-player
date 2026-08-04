@@ -5,6 +5,7 @@ import type {
   DownloadJob,
   EngineStatus,
   GenerationProgress,
+  GenStyle,
   GenTarget,
   ImportReport,
   LogLine,
@@ -18,7 +19,7 @@ import type {
   YtTools,
 } from "./types";
 import { EMPTY_TOOLS, IDLE_RUN, OFFLINE_ENGINE } from "./types";
-import { devJobs, devSourceUrl, devStats, devTracks } from "./dev-fixtures";
+import { DEV_STYLES, devJobs, devSourceUrl, devStats, devTracks } from "./dev-fixtures";
 
 /**
  * `npm run dev` can be opened in a plain browser, where there is no Tauri IPC
@@ -451,9 +452,24 @@ export function generationState(): Promise<GenerationProgress> {
   return invoke<GenerationProgress>("generation_state");
 }
 
-export function generationStart(target: GenTarget): Promise<GenerationProgress> {
+/**
+ * Start a run, optionally restricted to named styles.
+ *
+ * An empty list means the prompt bank's own weights decide the mix, which is
+ * the default and what an untargeted run has always done.
+ */
+export function generationStart(
+  target: GenTarget,
+  styles: string[],
+): Promise<GenerationProgress> {
   if (!IN_TAURI) return Promise.reject(new Error("not running inside the desktop shell"));
-  return invoke<GenerationProgress>("generation_start", { target });
+  return invoke<GenerationProgress>("generation_start", { target, styles });
+}
+
+/** The styles `engine/prompts.toml` can render, with their default share. */
+export function generationStyles(): Promise<GenStyle[]> {
+  if (!IN_TAURI) return Promise.resolve(DEV_STYLES);
+  return invoke<GenStyle[]>("generation_styles");
 }
 
 export function generationCancel(): Promise<void> {

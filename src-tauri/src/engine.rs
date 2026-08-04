@@ -211,6 +211,105 @@ fn format_hours(h: f64) -> String {
     }
 }
 
+/// One style the prompt bank can render, and how much of an untargeted run it
+/// would normally make up.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GenStyle {
+    pub name: String,
+    /// Relative weight from the bank, as a percentage of a full run.
+    pub share: u32,
+    /// The tempo range this style is written for, as `[low, high]`.
+    pub bpm: [u32; 2],
+}
+
+/// Read the styles out of `prompts.toml`.
+///
+/// Scanned rather than parsed with a TOML crate: the only thing wanted is the
+/// `name`, `weight` and `bpm` of each `[[genre]]`, and the file is written by
+/// hand in a shape that has not changed. A malformed bank yields an empty list,
+/// which the UI shows as "every style" — the generator's own loader is the
+/// thing that gets to reject a broken file.
+pub fn read_styles(engine_dir: &Path) -> Vec<GenStyle> {
+    let Ok(text) = std::fs::read_to_string(engine_dir.join("prompts.toml")) else {
+        return Vec::new();
+    };
+
+    let mut out: Vec<GenStyle> = Vec::new();
+    let mut in_genre = false;
+    let mut name: Option<String> = None;
+    let mut weight = 1u32;
+    let mut bpm = [80u32, 100u32];
+
+    let flush = |out: &mut Vec<GenStyle>, name: &mut Option<String>, weight: u32, bpm: [u32; 2]| {
+        if let Some(name) = name.take() {
+            out.push(GenStyle {
+                name,
+                share: weight,
+                bpm,
+            });
+        }
+    };
+
+    for raw in text.lines() {
+        let line = raw.trim();
+        if line.starts_with("[[") {
+            flush(&mut out, &mut name, weight, bpm);
+            in_genre = line.starts_with("[[genre]]");
+            weight = 1;
+            bpm = [80, 100];
+            continue;
+        }
+        // A new top-level table ends the last genre block.
+        if line.starts_with('[') {
+            flush(&mut out, &mut name, weight, bpm);
+            in_genre = false;
+            continue;
+        }
+        if !in_genre {
+            continue;
+        }
+        if let Some(value) = field(line, "name") {
+            name = value.trim().trim_matches('"').to_string().into();
+        } else if let Some(value) = field(line, "weight") {
+            weight = value.trim().parse().unwrap_or(1);
+        } else if let Some(value) = field(line, "bpm") {
+            let nums: Vec<u32> = value
+                .trim()
+                .trim_matches(|c| c == '[' || c == ']')
+                .split(',')
+                .filter_map(|n| n.trim().parse().ok())
+                .collect();
+            if let [lo, hi] = nums[..] {
+                bpm = [lo, hi];
+            }
+        }
+    }
+    flush(&mut out, &mut name, weight, bpm);
+
+    // Weights become percentages, so the UI can say what an untargeted run
+    // would actually contain rather than showing raw numbers.
+    let total: u32 = out.iter().map(|s| s.share).sum();
+    if total > 0 {
+        for style in &mut out {
+            style.share = (style.share * 100).div_ceil(total).min(100);
+        }
+    }
+    out
+}
+
+/// `key = value` on one line, or `None` if this line is something else.
+fn field<'a>(line: &'a str, key: &str) -> Option<&'a str> {
+    let rest = line.strip_prefix(key)?;
+    let rest = rest.trim_start();
+    rest.strip_prefix('=')
+}
+
+#[tauri::command(async)]
+pub fn generation_styles(engine: State<'_, Engine>) -> Vec<GenStyle> {
+    read_styles(&engine.paths().engine_dir)
+}
+
 // ---------------------------------------------------------------------------
 // Paths
 // ---------------------------------------------------------------------------
@@ -672,8 +771,23 @@ impl Engine {
         &self,
         app: &AppHandle<R>,
         target: GenTarget,
+        styles: &[String],
     ) -> Result<GenerationProgress, String> {
         let target = target.validate()?;
+        // An unknown style is refused here as well as by the generator, because
+        // the generator only finds out after it has been started.
+        if !styles.is_empty() {
+            let known: Vec<String> = read_styles(&self.paths.engine_dir)
+                .into_iter()
+                .map(|s| s.name)
+                .collect();
+            if let Some(bad) = styles
+                .iter()
+                .find(|want| !known.iter().any(|k| k.eq_ignore_ascii_case(want)))
+            {
+                return Err(format!("unknown style: {bad}"));
+            }
+        }
         if let Some(blocker) = self.paths.blocker() {
             return Err(blocker);
         }
@@ -697,6 +811,13 @@ impl Engine {
             .arg("-u")
             .arg(&self.paths.generator)
             .args(target.args())
+            // Repeated `--genre` restricts the run to the chosen styles; with
+            // none the bank's own weights decide, which is the default.
+            .args(
+                styles
+                    .iter()
+                    .flat_map(|name| ["--genre".to_string(), name.clone()]),
+            )
             .env("PYTHONUNBUFFERED", "1")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -935,8 +1056,9 @@ pub fn generation_start(
     app: AppHandle,
     engine: State<'_, Engine>,
     target: GenTarget,
+    styles: Option<Vec<String>>,
 ) -> Result<GenerationProgress, String> {
-    engine.start_generation(&app, target)
+    engine.start_generation(&app, target, &styles.unwrap_or_default())
 }
 
 #[tauri::command]
@@ -950,6 +1072,62 @@ pub fn generation_cancel(app: AppHandle, engine: State<'_, Engine>) -> Result<()
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The picker offers whatever the bank carries, so the scan has to agree
+    /// with the file the generator itself reads. Written against the real
+    /// shape: weights, a bpm pair, and other top-level tables around it.
+    #[test]
+    fn reads_the_styles_out_of_a_prompt_bank() {
+        let root = std::env::temp_dir().join(format!(
+            "music-ai-styles-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("create");
+        std::fs::write(
+            root.join("prompts.toml"),
+            r#"
+[defaults]
+audio_duration = 200
+
+[[key]]
+name = "A Minor"
+weight = 20
+
+[[genre]]
+name   = "cyberpunk techno"
+weight = 30
+bpm    = [80, 100]
+genre_phrase = ["a", "b"]
+
+[[genre]]
+name   = "deep cyberpunk"
+weight = 10
+bpm    = [74, 88]
+
+[modifiers]
+mood = ["bleak"]
+"#,
+        )
+        .expect("write");
+
+        let styles = read_styles(&root);
+        let _ = std::fs::remove_dir_all(&root);
+
+        assert_eq!(styles.len(), 2, "keys and modifiers are not genres: {styles:?}");
+        assert_eq!(styles[0].name, "cyberpunk techno");
+        assert_eq!(styles[0].bpm, [80, 100]);
+        assert_eq!(styles[1].name, "deep cyberpunk");
+        // Weights are reported as a share of a whole run, not raw.
+        assert_eq!(styles[0].share, 75);
+        assert_eq!(styles[1].share, 25);
+    }
+
+    #[test]
+    fn a_missing_bank_offers_no_styles_rather_than_failing() {
+        assert!(read_styles(Path::new("/nonexistent/engine")).is_empty());
+    }
     #[cfg(target_os = "linux")]
     use crate::proc::still_running;
 
@@ -1152,7 +1330,7 @@ sys.exit(0)
         assert!(engine.status().supervised);
 
         engine
-            .start_generation(&handle, GenTarget::Tracks(4))
+            .start_generation(&handle, GenTarget::Tracks(4), &[])
             .expect("start generation");
         let run_pgid = engine
             .run

@@ -142,6 +142,11 @@ streams progress, and stops it again — or drive it from a terminal:
 ./engine/generate.py --hours 24        # the full library (~432 tracks)
 ./engine/generate.py --status          # what's in the library
 ./engine/generate.py --resume          # continue after an interruption
+
+# Restrict a run to one or more styles from the prompt bank. Repeatable; an
+# unknown name is refused rather than silently ignored. The Generate drawer
+# offers the same choice as chips.
+./engine/generate.py --tracks 10 --genre "deep cyberpunk"
 ```
 
 The first `start-api.sh` downloads ~4 GB of model weights and takes a while.

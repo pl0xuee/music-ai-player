@@ -1796,3 +1796,61 @@ input[type="radio"] {
   opacity: 0.4;
   cursor: default;
 }
+
+/* --- style chips ---------------------------------------------------------- */
+
+/* One click per choice, and the default costs no click at all. The note carries
+   the share of an untargeted run when the chip is off, and the tempo range the
+   style is written for once it is on — the two things worth knowing before
+   committing a GPU to it. */
+.chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 7px;
+  padding: 6px 12px;
+  border: 1px solid var(--edge);
+  border-radius: 20px;
+  background:
+    var(--sheen),
+    linear-gradient(180deg, #232a36, #1a202a);
+  box-shadow:
+    var(--lift),
+    var(--drop);
+  color: var(--mute);
+  font-family: var(--ui);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition:
+    border-color 120ms ease,
+    color 120ms ease;
+}
+
+.chip:hover:not(:disabled) {
+  border-color: var(--live);
+  color: var(--paper);
+}
+
+.chip.is-on {
+  border-color: var(--live);
+  color: var(--paper);
+  box-shadow:
+    var(--lift),
+    0 0 0 1px rgba(var(--live-rgb), 0.35),
+    0 2px 12px rgba(var(--live-rgb), 0.22);
+}
+
+.chip:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.chip-note {
+  font-family: var(--data);
+  font-size: 10px;
+  color: var(--faint);
+}
+
+.chip.is-on .chip-note {
+  color: var(--live);
+}

@@ -1,4 +1,4 @@
-import type { DownloadJob, Stats, Track } from "./types";
+import type { DownloadJob, GenStyle, Stats, Track } from "./types";
 
 /**
  * Which surface to open on load, from the URL hash — `#generate`, `#import`,
@@ -187,3 +187,11 @@ export function devStats(): Stats {
     ],
   };
 }
+
+/** The styles the real prompt bank carries, for reviewing the picker. */
+export const DEV_STYLES: GenStyle[] = [
+  { name: "cyberpunk techno", share: 42, bpm: [80, 100] },
+  { name: "tech-noir darksynth", share: 28, bpm: [76, 96] },
+  { name: "industrial cyberpunk", share: 20, bpm: [82, 100] },
+  { name: "deep cyberpunk", share: 10, bpm: [74, 88] },
+];
