@@ -1,0 +1,29 @@
+[package]
+name = "music-ai-player"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.77.2"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# `tray-icon` pulls in the system tray; `image-png` lets us decode the bundled
+# PNG icon for the tray at runtime.
+tauri = { version = "2", features = ["protocol-asset", "tray-icon", "image-png"] }
+tauri-plugin-global-shortcut = "2"
+serde = { version = "1", features = ["derive"] }
+# yt-dlp reports each item as a one-line JSON object on stdout; see youtube.rs.
+serde_json = "1"
+rusqlite = { version = "0.40", features = ["bundled"] }
+
+# Signalling a *process group* (SIGINT for a clean, resumable cancel; SIGKILL as
+# the backstop) and PR_SET_PDEATHSIG both need raw syscalls that std does not
+# expose. See `engine::proc`.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+# `test` gives the mock runtime the engine end-to-end test drives, so the whole
+# spawn -> health-check -> progress -> cancel path runs without a display.
+[dev-dependencies]
+tauri = { version = "2", features = ["test"] }

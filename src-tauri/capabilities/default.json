@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Baseline permissions for the player window. The asset protocol is not ACL-gated in Tauri v2 - it is controlled by app.security.assetProtocol plus the runtime scope set in main.rs. `core:default` already carries core:event:default (allow-listen / allow-unlisten, which every engine, generation and transport event depends on) plus core:menu:default and core:tray:default, so the tray and its menu need nothing extra. The global-shortcut plugin's `default` set is deliberately EMPTY upstream: the media keys are registered from Rust in desktop.rs, so the webview is granted no ability to bind or unbind system-wide keys. Window show/hide is driven from the tray in Rust for the same reason. The engine and generation commands are ordinary #[tauri::command]s registered in main.rs and are not ACL-gated.",
+  "windows": ["main"],
+  "permissions": ["core:default", "global-shortcut:default"]
+}

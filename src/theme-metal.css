@@ -1,0 +1,1149 @@
+/* ---------------------------------------------------------------------------
+   Music AI Player — dark metal grey.
+
+   Rack-mount studio hardware: milled aluminium faceplates seated in a dark
+   chassis, engraved lettering, machined-out wells for anything that displays.
+   The whole app is monochrome gunmetal; the single red lamp is the only chroma
+   there is, and it is reserved for "this is happening right now" — the engine
+   coming up, a generation run in flight. Nothing decorative is ever red.
+
+   Loaded last, on top of styles.css and visualizer.css, so it wins the cascade
+   on equal specificity without needing !important.
+
+   Depth is carried entirely by 1px bevels and 2–4% gradients:
+     raised plate  = light hairline on the top edge, dark on the bottom
+     machined well = dark hairline on the top edge, light on the bottom
+   Active/selected is brightness and bevel direction, never colour.
+--------------------------------------------------------------------------- */
+
+:root {
+  /* -- new vocabulary ----------------------------------------------------- */
+
+  --chassis: #0e1012;
+  --panel-base: #2b2f34;
+  --panel-hi: #3d434a;
+  --panel-lo: #191c1f;
+  --engraved: #9aa3ab;
+  --bevel-lt: rgba(255, 255, 255, 0.1);
+  --bevel-dk: rgba(0, 0, 0, 0.65);
+  --lamp: #e0483a;
+  --lamp-glow: rgba(224, 72, 58, 0.55);
+
+  /* A faceplate is flat metal with light caught on its milled top lip and a
+     shadow gathering at its foot — NOT a top-to-bottom gradient. So the shading
+     is pinned to fixed pixel distances from the edges: a 1400px-tall plate and
+     a 48px strip then read as the same material, which a percentage gradient
+     can never do (it turns tall panels into a soft wash). */
+  --lip: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.055) 0px,
+    rgba(255, 255, 255, 0.018) 24px,
+    rgba(255, 255, 255, 0) 66px
+  );
+  --foot: linear-gradient(
+    0deg,
+    rgba(0, 0, 0, 0.24) 0px,
+    rgba(0, 0, 0, 0.07) 20px,
+    rgba(0, 0, 0, 0) 54px
+  );
+  --lip-s: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.06) 0px,
+    rgba(255, 255, 255, 0.016) 13px,
+    rgba(255, 255, 255, 0) 28px
+  );
+  --foot-s: linear-gradient(
+    0deg,
+    rgba(0, 0, 0, 0.2) 0px,
+    rgba(0, 0, 0, 0) 24px
+  );
+
+  --plate-key: linear-gradient(180deg, #434950 0%, #383e44 54%, #31363b 100%);
+  --plate-key-hi: linear-gradient(180deg, #515861 0%, #434950 54%, #3b4147 100%);
+  --plate-key-down: linear-gradient(180deg, #212529 0%, #282c31 100%);
+  --well: linear-gradient(180deg, rgba(0, 0, 0, 0.45) 0px, rgba(0, 0, 0, 0) 12px),
+    linear-gradient(0deg, rgba(255, 255, 255, 0.05) 0px, rgba(255, 255, 255, 0) 9px);
+  --well-deep: linear-gradient(180deg, rgba(0, 0, 0, 0.55) 0px, rgba(0, 0, 0, 0) 14px);
+
+  /* Brushed grain. One static repeating gradient, no per-frame cost. 3px
+     period so it never beats against the device pixel grid. */
+  --grain: repeating-linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.021) 0px,
+    rgba(255, 255, 255, 0.021) 1px,
+    rgba(0, 0, 0, 0.026) 1px,
+    rgba(0, 0, 0, 0.026) 3px
+  );
+
+  --edge-up: inset 0 1px 0 var(--bevel-lt), inset 0 -1px 0 var(--bevel-dk);
+  --edge-in: inset 0 1px 0 var(--bevel-dk), inset 0 -1px 0 var(--bevel-lt);
+
+  --label: "Fira Sans Compressed", "Fira Sans Condensed", "Roboto Condensed",
+    "Helvetica Neue", Arial, sans-serif;
+
+  /* -- remapped originals -------------------------------------------------- */
+  /* Every component that already reaches for one of these picks the metal up
+     for free; the targeted rules below only handle what tokens can't say. */
+
+  --void: var(--chassis);
+  --panel: var(--panel-base);
+  --raise: #343a40;
+  --rule: #14171a;
+  --rule-warm: #4d545c;
+
+  --dim: var(--engraved); /* 5.3:1 on the faceplate */
+  --text: #c6ccd2; /* 8.3:1 */
+  --bright: #e8edf1; /* 11.9:1 */
+
+  /* The old accent is now "brighter", not "another colour". */
+  --amber: var(--bright);
+  --amber-ink: #16191c;
+  --amber-wash: rgba(255, 255, 255, 0.07);
+  --amber-line: rgba(255, 255, 255, 0.22);
+
+  --mono: "JetBrains Mono", "Fira Mono", "IBM Plex Mono", "DejaVu Sans Mono",
+    ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  --rail-h: 48px;
+  --dock-h: 104px;
+
+  color-scheme: dark;
+}
+
+/* --- shell ---------------------------------------------------------------- */
+
+body {
+  background: var(--chassis);
+  font-size: 13px;
+}
+
+/* Was a CRT scanline. Now a chassis vignette: the plates sit in a box, and a
+   box has corners that the light does not reach. */
+body::after {
+  background: radial-gradient(
+    150% 130% at 50% 2%,
+    transparent 62%,
+    rgba(0, 0, 0, 0.22) 100%
+  );
+}
+
+::selection {
+  background: var(--bright);
+  color: var(--amber-ink);
+}
+
+/* A bright hairline plus a dark halo, so the ring reads against both a lit
+   faceplate and a machined-out well. */
+:focus-visible {
+  outline: 1px solid #dfe6ec;
+  outline-offset: 2px;
+  border-radius: 1px;
+}
+
+.btn:focus-visible,
+.select:focus-visible,
+.row:focus-visible,
+.gp-preset:focus-visible,
+.rail-action:focus-visible,
+.range:focus-visible {
+  outline-offset: 2px;
+  box-shadow: 0 0 0 4px rgba(0, 0, 0, 0.55);
+}
+
+/* --- typography ----------------------------------------------------------- */
+/* Two voices only. Fira Sans Compressed, uppercase and tracked out, is the
+   engraved faceplate lettering; the mono stack is anything that is a number
+   you watch change. */
+
+.mark,
+.mark-sub,
+.readout-key,
+.dock-label,
+.lib-title,
+.viz-tag,
+.now-eyebrow,
+.meta-key,
+.prompt-key,
+.handover-key,
+.handover-caption,
+.empty-key,
+.empty-title,
+.btn,
+.gp-title,
+.gp-section-key,
+.gp-state,
+.gp-preset-unit,
+.gp-stat-key,
+.gp-genre,
+.rail-action,
+.now-title {
+  font-family: var(--label);
+  font-weight: 600;
+}
+
+.readout-val,
+.meta-val,
+.scrub-time,
+.lib-count,
+.row-title,
+.row-index,
+.row-bpm,
+.row-key,
+.gp-stat-val,
+.gp-preset-value,
+.gp-log,
+.gp-detail,
+.gp-path {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+}
+
+/* --- rail ----------------------------------------------------------------- */
+
+.rail {
+  background-color: var(--panel-base);
+  background-image: var(--grain), var(--lip-s), var(--foot-s);
+  border-bottom: 1px solid #0a0c0d;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12);
+  padding: 0 var(--pad);
+}
+
+.mark {
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  color: var(--bright);
+  text-shadow: 0 1px 0 rgba(0, 0, 0, 0.55);
+}
+
+.mark-slash {
+  color: var(--dim);
+}
+
+.mark-sub {
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+
+.readouts {
+  gap: 22px;
+}
+
+.readout {
+  gap: 8px;
+}
+
+.readout-key {
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  color: var(--dim);
+  text-shadow: 0 1px 0 rgba(0, 0, 0, 0.5);
+}
+
+.readout-val {
+  font-size: 12px;
+  color: var(--text);
+}
+
+.readout-val.is-live {
+  color: var(--bright);
+}
+
+/* --- rail action (generator toggle) --------------------------------------- */
+
+.rail-action {
+  height: 28px;
+  padding: 0 12px;
+  border: 1px solid #101315;
+  border-radius: 2px;
+  background: var(--plate-key);
+  color: var(--dim);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  box-shadow: var(--edge-up), 0 1px 1px rgba(0, 0, 0, 0.35);
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.rail-action:hover {
+  background: var(--plate-key-hi);
+  border-color: #101315;
+  color: var(--bright);
+}
+
+.rail-action:active {
+  background: var(--plate-key-down);
+  box-shadow: var(--edge-in);
+}
+
+.rail-action.is-live {
+  background: var(--plate-key-down);
+  border-color: #0d0f11;
+  color: var(--bright);
+  box-shadow: var(--edge-in);
+}
+
+/* One of exactly three lamps in the app. */
+.rail-action-dot {
+  width: 6px;
+  height: 6px;
+  background: var(--lamp);
+  box-shadow: 0 0 5px var(--lamp-glow);
+}
+
+/* --- deck: the visualiser well -------------------------------------------- */
+
+.viz {
+  background: radial-gradient(120% 150% at 50% 100%, #15191c 0%, #0a0c0d 72%);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+  box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.85), inset 0 8px 16px -8px rgba(0, 0, 0, 0.9);
+}
+
+/* visualizer.css puts a warm lip along the TOP edge. A machined-out cavity is
+   shadowed at the top, so the lip moves to being a shadow and the light line
+   is the border-bottom above. */
+.viz::before {
+  background: linear-gradient(
+    to right,
+    transparent 0%,
+    rgba(0, 0, 0, 0.8) 14%,
+    rgba(0, 0, 0, 0.8) 86%,
+    transparent 100%
+  );
+}
+
+/* Was a phosphor bloom in amber. Now a cool backlight and a deeper vignette —
+   the well is lit, not glowing. */
+.viz::after {
+  background:
+    radial-gradient(140% 88% at 50% 112%, rgba(200, 218, 232, 0.045), transparent 62%),
+    radial-gradient(125% 125% at 50% 46%, transparent 46%, rgba(0, 0, 0, 0.62) 100%);
+}
+
+/* The canvas paints its own palette in JS and is not ours to edit. Desaturating
+   at composite time folds it into the monochrome scheme; it is a no-op on
+   anything already grey. */
+.viz-canvas {
+  /* Visualizer.tsx now paints neutral READOUT grey directly -- the
+     grayscale() stopgap that used to live here is no longer needed. */
+}
+
+.viz-tag {
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  color: var(--dim);
+}
+
+.viz-tag-slash {
+  color: #5f686f;
+}
+
+/* --- deck: now playing plate ---------------------------------------------- */
+
+.now {
+  background-color: var(--panel-base);
+  background-image: var(--grain), var(--lip), var(--foot);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.11);
+  gap: 16px;
+  padding: 20px var(--pad) 18px;
+}
+
+.now-eyebrow {
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  color: var(--dim);
+  text-shadow: 0 1px 0 rgba(0, 0, 0, 0.5);
+}
+
+.now-deck {
+  color: var(--bright);
+}
+
+.now-title {
+  font-size: clamp(26px, 3.8vw, 40px);
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  color: var(--bright);
+  text-shadow: 0 1px 0 rgba(0, 0, 0, 0.5);
+}
+
+.now-title.is-idle {
+  font-family: var(--label);
+  font-size: 17px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  color: var(--dim);
+  text-shadow: none;
+}
+
+/* Readout strip, milled into the plate: dark on the top edge, light on the
+   bottom, with a groove between every cell. */
+.now-meta {
+  border: 1px solid #101315;
+  border-radius: 2px;
+  background-color: var(--panel-lo);
+  background-image: var(--well);
+  box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.7), inset 0 -1px 0 rgba(255, 255, 255, 0.07);
+}
+
+.meta-cell {
+  padding: 8px 12px;
+  border-right: 1px solid rgba(0, 0, 0, 0.55);
+  background: transparent;
+  box-shadow: inset -1px 0 0 rgba(255, 255, 255, 0.045);
+}
+
+.meta-cell:last-child {
+  box-shadow: none;
+}
+
+.meta-key {
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  color: #949ca4;
+}
+
+.meta-val {
+  margin-top: 3px;
+  font-size: 15px;
+  color: var(--text);
+}
+
+.meta-val.is-accent {
+  color: var(--bright);
+}
+
+/* --- prompt --------------------------------------------------------------- */
+
+.prompt {
+  border-left: 2px solid rgba(255, 255, 255, 0.16);
+  padding-left: 13px;
+}
+
+.prompt-key {
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  color: var(--dim);
+}
+
+.tag {
+  padding: 3px 9px;
+  border: 1px solid #14181b;
+  border-radius: 2px;
+  background: var(--plate-key);
+  box-shadow: var(--edge-up);
+  font-family: var(--label);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.03em;
+  color: var(--text);
+}
+
+/* --- scrub + ranges ------------------------------------------------------- */
+
+/* The seek strip is a module let into the plate, not floating text on it.
+   It also gives the tall now-playing panel a foot so the empty middle reads as
+   panel space between two machined modules rather than as a dead gradient. */
+.scrub {
+  margin-top: auto;
+  gap: 13px;
+  padding: 10px 14px;
+  border: 1px solid #101315;
+  border-radius: 2px;
+  background-color: var(--panel-lo);
+  background-image: var(--well);
+  box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.75), inset 0 -1px 0 rgba(255, 255, 255, 0.07);
+}
+
+.scrub-time {
+  font-size: 12px;
+  color: var(--dim);
+  min-width: 44px;
+}
+
+.scrub-time.is-elapsed {
+  color: var(--bright);
+}
+
+/* A trough machined into the plate, with a milled nub riding in it. */
+.range::-webkit-slider-runnable-track {
+  height: 5px;
+  border-radius: 3px;
+  background: linear-gradient(180deg, #0d0f11 0%, #1b1f22 100%);
+  box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.9), inset 0 -1px 0 rgba(255, 255, 255, 0.07);
+}
+
+.range::-moz-range-track {
+  height: 5px;
+  border-radius: 3px;
+  background: linear-gradient(180deg, #0d0f11 0%, #1b1f22 100%);
+  box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.9), inset 0 -1px 0 rgba(255, 255, 255, 0.07);
+}
+
+.range::-webkit-slider-thumb {
+  width: 8px;
+  height: 18px;
+  margin-top: -6.5px;
+  border-radius: 1px;
+  background: var(--plate-key-hi);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.28),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.6),
+    0 1px 2px rgba(0, 0, 0, 0.55);
+}
+
+.range::-moz-range-thumb {
+  width: 8px;
+  height: 18px;
+  border-radius: 1px;
+  background: var(--plate-key-hi);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.28),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.6),
+    0 1px 2px rgba(0, 0, 0, 0.55);
+}
+
+.range:hover:not(:disabled)::-webkit-slider-thumb {
+  background: linear-gradient(180deg, #5a626a 0%, #464d54 100%);
+}
+
+.range:hover:not(:disabled)::-moz-range-thumb {
+  background: linear-gradient(180deg, #5a626a 0%, #464d54 100%);
+}
+
+.range:disabled {
+  opacity: 0.45;
+}
+
+/* --- library plate -------------------------------------------------------- */
+
+.aside {
+  background-color: var(--panel-base);
+  background-image: var(--grain), var(--lip), var(--foot);
+  box-shadow: inset 1px 0 0 rgba(255, 255, 255, 0.06), inset 0 1px 0 rgba(255, 255, 255, 0.11);
+}
+
+.lib-head {
+  padding: 0 16px;
+  height: var(--rail-h);
+  align-items: center;
+  border-bottom: 1px solid #101315;
+  box-shadow: inset 0 -2px 0 -1px rgba(255, 255, 255, 0.05);
+}
+
+.lib-title {
+  font-size: 12px;
+  letter-spacing: 0.18em;
+  color: var(--bright);
+  text-shadow: 0 1px 0 rgba(0, 0, 0, 0.55);
+}
+
+.lib-count {
+  font-size: 11px;
+  color: var(--dim);
+}
+
+/* The list is machined out of the plate; the rows sit down inside it. */
+.lib-list {
+  background-color: var(--panel-lo);
+  background-image: var(--well);
+  box-shadow:
+    inset 0 1px 0 rgba(0, 0, 0, 0.8),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.06);
+}
+
+.row {
+  padding: 8px 16px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.45);
+  transition: background-color 90ms linear;
+}
+
+.row:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.row:active {
+  background: rgba(0, 0, 0, 0.28);
+}
+
+/* Selected = pressed in, and brighter. No colour. */
+.row.is-current {
+  border-left-color: var(--bright);
+  background: rgba(255, 255, 255, 0.08);
+  box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.5), inset 0 -1px 0 rgba(255, 255, 255, 0.07);
+}
+
+.row-index {
+  font-size: 11px;
+  color: #8b949c;
+}
+
+.row.is-current .row-index {
+  color: var(--bright);
+}
+
+.row-title {
+  font-size: 12px;
+  color: var(--text);
+}
+
+.row-bpm,
+.row-key {
+  font-size: 11px;
+  color: var(--dim);
+}
+
+.row-mark {
+  font-size: 12px;
+  color: var(--dim);
+}
+
+.row-mark.is-up {
+  color: var(--bright);
+}
+
+.row.is-buried {
+  opacity: 0.45;
+}
+
+/* --- the dock: one machined faceplate ------------------------------------- */
+/* The most worked surface in the app. Everything else stays quieter than it. */
+
+.dock {
+  background-color: #30353a;
+  background-image: var(--grain), var(--lip-s), var(--foot-s);
+  border-top: 1px solid #08090a;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.14),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.7);
+  gap: 22px;
+}
+
+.dock-group {
+  gap: 10px;
+}
+
+.dock-label {
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  color: var(--dim);
+  text-shadow: 0 1px 0 rgba(0, 0, 0, 0.5);
+}
+
+/* --- keys ----------------------------------------------------------------- */
+
+.btn,
+.select,
+.gp-preset {
+  border: 1px solid #101315;
+  border-radius: 2px;
+  background: var(--plate-key);
+  box-shadow: var(--edge-up), 0 1px 1px rgba(0, 0, 0, 0.4);
+  transition: background 110ms ease, color 110ms ease, box-shadow 110ms ease;
+}
+
+.btn {
+  height: 36px;
+  min-width: 44px;
+  padding: 0 14px;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text);
+  text-shadow: 0 1px 0 rgba(0, 0, 0, 0.5);
+}
+
+.btn:hover:not(:disabled) {
+  background: var(--plate-key-hi);
+  border-color: #101315;
+  color: var(--bright);
+}
+
+.btn:active:not(:disabled) {
+  background: var(--plate-key-down);
+  box-shadow: var(--edge-in);
+}
+
+.btn:disabled {
+  opacity: 1;
+  background: linear-gradient(180deg, #2e3338 0%, #282c31 100%);
+  color: #838c93;
+  text-shadow: none;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035);
+}
+
+/* The transport key. Same metal, brighter engraving and a wider face — it is
+   the one you hit without looking. */
+.btn.is-primary {
+  min-width: 92px;
+  border-color: #0d0f11;
+  background: linear-gradient(180deg, #4c535a 0%, #40464d 54%, #383e44 100%);
+  color: var(--bright);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.2),
+    inset 0 -1px 0 var(--bevel-dk),
+    0 1px 2px rgba(0, 0, 0, 0.45);
+}
+
+.btn.is-primary:hover:not(:disabled) {
+  background: linear-gradient(180deg, #cfd6dc 0%, #aab2b9 100%);
+  border-color: #0d0f11;
+  color: var(--amber-ink);
+  text-shadow: none;
+}
+
+/* Latched = held down. */
+.btn.is-on {
+  background: var(--plate-key-down);
+  border-color: #0b0d0f;
+  color: var(--bright);
+  box-shadow:
+    inset 0 1px 0 rgba(0, 0, 0, 0.9),
+    inset 0 3px 5px -2px rgba(0, 0, 0, 0.7),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.08);
+}
+
+.select {
+  height: 36px;
+  padding: 0 10px;
+  font-family: var(--label);
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  color: var(--text);
+}
+
+.select:hover {
+  background: var(--plate-key-hi);
+  color: var(--bright);
+}
+
+/* Safety net for text fields. Nothing in the app has one today, but a bare
+   input on a metal plate would render as a white box, and this is a single
+   low-specificity rule that any purpose-built class can still override. */
+input[type="text"],
+input[type="search"],
+input[type="number"],
+input[type="url"],
+textarea {
+  border: 1px solid #101315;
+  border-radius: 2px;
+  background-color: var(--panel-lo);
+  background-image: var(--well);
+  box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.75), inset 0 -1px 0 rgba(255, 255, 255, 0.06);
+  color: var(--bright);
+  font: inherit;
+  padding: 8px 10px;
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: #7f888f;
+}
+
+/* --- handover meter ------------------------------------------------------- */
+/* A sub-module recessed into the dock face, the way a meter is let into a
+   rack panel rather than printed on it. */
+
+.handover {
+  padding: 9px 14px;
+  border: 1px solid #0f1214;
+  border-radius: 2px;
+  background-color: var(--panel-lo);
+  background-image: var(--well);
+  box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.8), inset 0 -1px 0 rgba(255, 255, 255, 0.07);
+  gap: 12px;
+  row-gap: 8px;
+}
+
+.handover-key {
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  color: var(--dim);
+}
+
+.handover-key.is-live {
+  color: var(--bright);
+}
+
+.handover-track {
+  height: 4px;
+  border-radius: 2px;
+  background: #0a0c0d;
+  box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.9), inset 0 -1px 0 rgba(255, 255, 255, 0.05);
+  overflow: hidden;
+}
+
+.handover-fill {
+  background: linear-gradient(180deg, var(--bright) 0%, #b6bec5 100%);
+}
+
+.handover-fill.is-quiet {
+  background: linear-gradient(180deg, #6c757c 0%, #545c62 100%);
+}
+
+.handover-caption {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: var(--dim);
+}
+
+/* --- empty state ---------------------------------------------------------- */
+
+.empty {
+  background-color: var(--panel-base);
+  background-image: var(--grain), var(--lip), var(--foot);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.11);
+  gap: 18px;
+}
+
+.empty-key {
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  color: var(--dim);
+  text-shadow: 0 1px 0 rgba(0, 0, 0, 0.5);
+}
+
+.empty-title {
+  font-size: 32px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  text-transform: uppercase;
+  color: var(--bright);
+  text-shadow: 0 1px 0 rgba(0, 0, 0, 0.5);
+}
+
+.empty-body {
+  color: var(--text);
+}
+
+.empty-cmd {
+  border: 1px solid #101315;
+  border-left: 2px solid rgba(255, 255, 255, 0.28);
+  border-radius: 2px;
+  background-color: var(--panel-lo);
+  background-image: var(--well);
+  box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.75), inset 0 -1px 0 rgba(255, 255, 255, 0.06);
+  color: var(--bright);
+}
+
+.empty-path {
+  color: var(--dim);
+}
+
+/* --- notice --------------------------------------------------------------- */
+
+/* Lifted clear of the seek module, which is now a raised-edge panel rather than
+   a bare hairline and reads badly with a toast sitting on top of it. */
+.notice {
+  bottom: calc(var(--dock-h) + 82px);
+  border: 1px solid #101315;
+  border-left: 2px solid rgba(255, 255, 255, 0.3);
+  border-radius: 2px;
+  background-color: #31363c;
+  background-image: var(--grain), var(--lip-s), var(--foot-s);
+  box-shadow: var(--edge-up), 0 6px 18px rgba(0, 0, 0, 0.55);
+  color: var(--text);
+}
+
+.notice-close {
+  font-family: var(--label);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+
+.notice-close:hover {
+  color: var(--bright);
+}
+
+/* --- generator drawer ----------------------------------------------------- */
+
+.gp-scrim {
+  background: rgba(6, 7, 8, 0.72);
+}
+
+.genpanel {
+  background-color: var(--panel-base);
+  background-image: var(--grain), var(--lip), var(--foot);
+  border-left: 1px solid #08090a;
+  box-shadow: inset 1px 0 0 rgba(255, 255, 255, 0.07), -14px 0 30px rgba(0, 0, 0, 0.5);
+}
+
+.gp-head {
+  border-bottom: 1px solid #101315;
+  box-shadow: inset 0 -2px 0 -1px rgba(255, 255, 255, 0.05);
+}
+
+.gp-title {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.2em;
+  color: var(--bright);
+  text-shadow: 0 1px 0 rgba(0, 0, 0, 0.55);
+}
+
+.gp-close {
+  color: var(--dim);
+}
+
+.gp-close:hover {
+  color: var(--bright);
+}
+
+.gp-section {
+  border-bottom: 1px solid rgba(0, 0, 0, 0.5);
+  box-shadow: inset 0 -2px 0 -1px rgba(255, 255, 255, 0.045);
+}
+
+.gp-section-key {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.2em;
+  color: var(--dim);
+  text-shadow: 0 1px 0 rgba(0, 0, 0, 0.5);
+}
+
+/* Lamp two and three. An unlit lamp is a dark hole in the plate, not a grey
+   dot — that is what makes the lit state read as lit. */
+.gp-dot {
+  width: 8px;
+  height: 8px;
+  background: #101315;
+  box-shadow: inset 0 1px 1px rgba(0, 0, 0, 0.9), 0 1px 0 rgba(255, 255, 255, 0.07);
+}
+
+.gp-dot.is-starting {
+  background: var(--lamp);
+  box-shadow: 0 0 5px var(--lamp-glow);
+}
+
+.gp-dot.is-online {
+  background: var(--lamp);
+  box-shadow: 0 0 7px var(--lamp-glow), inset 0 1px 0 rgba(255, 255, 255, 0.35);
+}
+
+.gp-state {
+  font-size: 13px;
+  letter-spacing: 0.14em;
+  color: var(--bright);
+  text-shadow: 0 1px 0 rgba(0, 0, 0, 0.5);
+}
+
+.gp-detail,
+.gp-note,
+.gp-path {
+  color: var(--dim);
+}
+
+.gp-note.is-warn {
+  border-left: 2px solid rgba(255, 255, 255, 0.28);
+  color: var(--text);
+}
+
+/* --- generator: target keys ----------------------------------------------- */
+
+.gp-preset {
+  padding: 10px 9px;
+  color: var(--text);
+}
+
+.gp-preset:hover:not(:disabled) {
+  background: var(--plate-key-hi);
+  border-color: #101315;
+}
+
+.gp-preset.is-on {
+  background: var(--plate-key-down);
+  border-color: #0b0d0f;
+  box-shadow:
+    inset 0 1px 0 rgba(0, 0, 0, 0.9),
+    inset 0 3px 5px -2px rgba(0, 0, 0, 0.7),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.08);
+}
+
+.gp-preset:disabled {
+  opacity: 1;
+  background: linear-gradient(180deg, #2e3338 0%, #282c31 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035);
+  color: #838c93;
+}
+
+.gp-preset-value {
+  font-size: 19px;
+  color: var(--text);
+}
+
+.gp-preset.is-on .gp-preset-value {
+  color: var(--bright);
+}
+
+/* These sit on a raised key face, which is lighter than the plate, so they
+   need to be lighter than --dim to hold the same 4.5:1. */
+.gp-preset-unit {
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  color: #adb5bc;
+}
+
+.gp-preset-note {
+  font-family: var(--label);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: #adb5bc;
+}
+
+/* --- generator: progress -------------------------------------------------- */
+
+.gp-bar {
+  height: 5px;
+  border-radius: 3px;
+  background: #0a0c0d;
+  box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.9), inset 0 -1px 0 rgba(255, 255, 255, 0.06);
+  overflow: hidden;
+}
+
+.gp-bar-fill {
+  background: linear-gradient(180deg, #6c757c 0%, #545c62 100%);
+}
+
+.gp-bar-fill.is-live {
+  background: linear-gradient(180deg, var(--bright) 0%, #b6bec5 100%);
+}
+
+.gp-stats {
+  border: 1px solid #101315;
+  border-radius: 2px;
+  background-color: #121518;
+  background-image: var(--well-deep);
+  box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.8), inset 0 -1px 0 rgba(255, 255, 255, 0.07);
+}
+
+.gp-stat {
+  border-right: 1px solid rgba(0, 0, 0, 0.6);
+  background: transparent;
+  box-shadow: inset -1px 0 0 rgba(255, 255, 255, 0.04);
+}
+
+.gp-stat:last-child {
+  box-shadow: none;
+}
+
+.gp-stat-key {
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  color: #949ca4;
+}
+
+.gp-stat-val {
+  font-size: 14px;
+  color: var(--text);
+}
+
+.gp-stat-val.is-live {
+  color: var(--bright);
+}
+
+.gp-line {
+  font-family: var(--mono);
+  color: var(--text);
+}
+
+.gp-genre {
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 2px;
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  color: var(--bright);
+}
+
+.gp-log {
+  border: 1px solid #101315;
+  border-radius: 2px;
+  background-color: #121518;
+  background-image: var(--well-deep);
+  box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.85), inset 0 -1px 0 rgba(255, 255, 255, 0.06);
+  color: #99a2a9;
+}
+
+.gp-log-line.is-err {
+  color: var(--text);
+}
+
+/* --- scrollbars ----------------------------------------------------------- */
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #454c53 #0d0f11;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: #0d0f11;
+  box-shadow: inset 1px 0 0 rgba(0, 0, 0, 0.8), inset -1px 0 0 rgba(255, 255, 255, 0.04);
+}
+
+::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 5px;
+  background: linear-gradient(180deg, #4d545b 0%, #3c4247 100%);
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(180deg, #5c646b 0%, #4a5157 100%);
+  background-clip: padding-box;
+}
+
+/* --- responsive ----------------------------------------------------------- */
+
+@media (max-width: 940px) {
+  .deck {
+    border-bottom: 1px solid #08090a;
+  }
+
+  .aside {
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06), inset 0 -1px 0 var(--bevel-dk);
+  }
+
+  .dock {
+    gap: 14px;
+  }
+
+  .now-title {
+    font-size: clamp(22px, 4.4vw, 30px);
+  }
+}
+
+@media (max-width: 1080px) {
+  .readouts {
+    gap: 16px;
+  }
+
+  .mark-sub {
+    display: none;
+  }
+}
+
+/* --- motion --------------------------------------------------------------- */
+
+@media (prefers-reduced-motion: reduce) {
+  .btn,
+  .select,
+  .gp-preset,
+  .rail-action,
+  .row {
+    transition: none;
+  }
+}

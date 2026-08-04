@@ -1,0 +1,29 @@
+# Generated audio + library database — this is the big one.
+# A full 24 h library is ~1.4 GB of opus and must never be committed.
+/library/*
+!/library/.gitkeep
+
+# The ACE-Step checkout and its venv live inside engine/ but are not ours.
+/engine/ACE-Step-1.5/
+
+# Node / Vite
+node_modules/
+dist/
+.vite/
+*.local
+
+# Rust / Tauri
+/src-tauri/target/
+/src-tauri/gen/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv*/
+
+# Editors / OS
+.DS_Store
+*.swp
+.idea/
+.vscode/

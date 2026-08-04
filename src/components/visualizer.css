@@ -1,0 +1,73 @@
+/* ---------------------------------------------------------------------------
+   Visualiser chrome.
+
+   The canvas paints the signal and nothing else. Everything static about the
+   panel — bezel, vignette, phosphor bloom — lives here, where it costs nothing
+   per frame and can never fall out of sync with the rest of the shell.
+
+   Layers inside .viz: canvas (1), bezel + vignette (2), tag (3).
+--------------------------------------------------------------------------- */
+
+.viz {
+  /* Keep the overlays from compositing against anything outside the panel. */
+  isolation: isolate;
+}
+
+.viz-canvas {
+  position: relative;
+  z-index: 1;
+}
+
+/* Bezel. One warm hairline along the top edge, fading at both ends so it reads
+   as a machined lip rather than a border. */
+.viz::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 1px;
+  z-index: 2;
+  pointer-events: none;
+  background: linear-gradient(
+    to right,
+    transparent 0%,
+    var(--rule-warm) 14%,
+    var(--rule-warm) 86%,
+    transparent 100%
+  );
+}
+
+/* Screen. A low amber wash where the columns sit — phosphor bleeding into the
+   glass — under a vignette that pulls the corners down so the panel reads as a
+   recessed display rather than a rectangle of page. */
+.viz::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  background:
+    radial-gradient(140% 88% at 50% 112%, rgba(255, 176, 0, 0.055), transparent 62%),
+    radial-gradient(125% 125% at 50% 46%, transparent 52%, rgba(0, 0, 0, 0.5) 100%);
+}
+
+.viz-tag {
+  z-index: 3;
+}
+
+/* Matches the .mark-slash idiom in the header: the separator is the one lit
+   glyph in an otherwise dim label. */
+.viz-tag-slash {
+  color: var(--amber);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* Drop the bloom; the analyser itself stays live because it is the readout,
+     not decoration. */
+  .viz::after {
+    background: radial-gradient(
+      125% 125% at 50% 46%,
+      transparent 52%,
+      rgba(0, 0, 0, 0.5) 100%
+    );
+  }
+}

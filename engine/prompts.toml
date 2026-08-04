@@ -1,0 +1,324 @@
+# ==============================================================================
+# Prompt bank — the single source of truth for what the library sounds like.
+#
+# TARGET: dark cyberpunk / tech-noir for coding sessions. ONE coherent station
+# sound, not a genre sampler.
+#
+# This is the second structure. The first spanned eight genres (dark techno,
+# hardstyle, acid, EBM, ...) and that was the core error: the reference is a
+# single consistent sound with internal variation, so a genre sampler wandered
+# off target no matter how well any individual track came out. The four
+# "genres" below are deliberately close relatives — different weightings of the
+# same palette, not different music.
+#
+# Every track, without exception:
+#   · steady driving beat            · enormous deep sub-bass
+#   · ambient synth pad underneath   · dystopian / neon / tech-noir mood
+#   · fully instrumental             · slow tempo (74–100 BPM)
+#
+# ---- TEMPO / SPECTRUM ARE MEASURED, NOT GUESSED -------------------------------
+# The reference stream was analysed with scratchpad/analyze2.py (per-octave dB
+# relative to peak, so the 1/f tilt common to all music cancels out — raw energy
+# percentages are useless here, they "match" for any two pieces of music).
+#
+#                        reference    ours (v6)
+#   tempo candidates     78 and 99    65 / 78      <- 68-90 was OVER-corrected
+#   octave peak          31 Hz        62 Hz        <- ours one octave too high
+#   spectral centroid    1652 Hz      2018 Hz      <- ours too bright
+#   rolloff 85%          4212 Hz      5692 Hz
+#   flatness             0.364        0.423
+#   percussive frac      0.058        0.050        ok
+#
+# Two fixes, both verified by re-measuring:
+#   1. bpm ranges now straddle the measured 78/99 pair.
+#   2. The octave and brightness gaps are corrected DETERMINISTICALLY by the
+#      mastering chain in generate.py (MASTER_CHAIN), not by asking the model
+#      for "infrasonic sub-bass" and hoping. After mastering: centroid 1708 Hz,
+#      flatness 0.376, worst octave gap 6.5 dB -> 3.9 dB.
+#
+# Re-measure after any change:
+#   venv_rocm/bin/python scratchpad/analyze2.py <reference.mp3> <our_dir>/
+#
+# ---- WHY THIS IS PROSE, NOT TAGS ---------------------------------------------
+# ACE-Step was trained on rich prose captions (see examples/text2music/).
+# A comma-separated tag list is out-of-distribution and produces incoherent
+# mush. Captions are assembled from sentence fragments:
+#
+#   "A {mood}, {mood} {genre_phrase} at {bpm} BPM. {foundation} {bass}
+#    {atmosphere} {mid_layer} {development} The production is {production}.
+#    The overall mood is {closing}. Fully instrumental with no vocals."
+#
+# ---- TUNING GUIDE ------------------------------------------------------------
+#   too samey       -> add `mid_layer` / `development` fragments
+#   not dark        -> darken `closing` and `mood`
+#   too fast        -> lower `bpm` ranges
+#   beat too weak   -> weight `cyberpunk techno` up, `deep cyberpunk` down
+#   not atmospheric -> add to the shared `atmosphere` pool
+#
+# Fragments must be grammatical standalone sentences (except `genre_phrase`,
+# `production` and the mood pools) — they are concatenated verbatim.
+# ==============================================================================
+
+[defaults]
+# NOT opus: torchaudio 2.10 delegates encoding to torchcodec (not installed)
+# and the soundfile fallback can't write an OPUS container, so the render
+# succeeds but the file write fails silently. mp3 is ~3.2 MB per 200 s track.
+audio_format   = "mp3"
+audio_duration = 200          # 3:20 — 432 of these ≈ 24 h
+model          = "acestep-v15-turbo"
+seed           = -1
+lyrics         = ""           # EMPTY ⇒ instrumental. Do not populate.
+
+# Minor keys throughout, skewed low and dark.
+[[key]]
+name = "F Minor"
+weight = 20
+[[key]]
+name = "D Minor"
+weight = 17
+[[key]]
+name = "C Minor"
+weight = 16
+[[key]]
+name = "G Minor"
+weight = 14
+[[key]]
+name = "A Minor"
+weight = 12
+[[key]]
+name = "Bb Minor"
+weight = 11
+[[key]]
+name = "Eb Minor"
+weight = 10
+
+# ------------------------------------------------------------------------------
+# Track titles — cosmetic only, the model never sees these. Tech-noir register
+# to match the library.
+# ------------------------------------------------------------------------------
+[titles]
+compound_head = [
+  "Null", "Void", "Deep", "Cold", "Dead", "Ghost", "Black", "Grey", "Wire",
+  "Data", "Neon", "Chrome", "Cipher", "Neural", "Zero", "Dark", "Signal",
+  "Core", "Node", "Sub", "Grid", "Iron", "Static", "Silent",
+]
+compound_tail = [
+  "core", "pulse", "loop", "drift", "lock", "shift", "line", "form",
+  "wave", "gate", "burn", "hold", "depth", "current", "signal", "sector",
+  "protocol", "cycle", "vector", "state",
+]
+adjective = [
+  "Hollow", "Fractured", "Silent", "Buried", "Severed", "Frozen", "Vacant",
+  "Endless", "Broken", "Distant", "Nocturnal", "Derelict", "Latent", "Sunken",
+  "Dormant", "Abandoned", "Submerged", "Unlit", "Encrypted", "Ciphered",
+  "Redacted", "Obsolete", "Terminal", "Recursive",
+]
+noun = [
+  "Circuit", "Bunker", "Signal", "Machine", "Reactor", "Corridor", "Vector",
+  "Terminal", "Chamber", "Engine", "Static", "Relay", "Conduit", "Lattice",
+  "Beacon", "Substation", "Archive", "Trench", "Protocol", "Interface",
+  "Subroutine", "Mainframe", "Uplink", "Datastream", "Firewall", "Cortex",
+]
+
+# ------------------------------------------------------------------------------
+# Shared pools — these define the constant character of the whole library.
+# ------------------------------------------------------------------------------
+[modifiers]
+mood = [
+  "bleak", "menacing", "brooding", "oppressive", "cold", "desolate",
+  "claustrophobic", "foreboding", "sombre", "grim", "austere", "shadowy",
+  "dystopian", "clandestine", "nocturnal", "sinister", "clinical", "remote",
+]
+
+# Deep low end in EVERY caption. Non-negotiable.
+bass = [
+  "An enormous sub-bass in the lowest octave dominates everything, felt in the chest rather than heard.",
+  "The entire track sits on a colossal 30 Hz sub-bass drone that never lets up.",
+  "A cavernous, room-shaking sub-bass fills the very bottom of the spectrum, thick and enveloping.",
+  "Crushing infrasonic sub-bass frequencies dominate the mix, deep and almost inaudible in pitch.",
+  "An immense low-frequency foundation anchors the track, so deep it is felt more than heard.",
+  "The sub-bass is vast and overwhelming, pitched far below the rest of the arrangement.",
+  "A monstrous sub-bass drone underpins everything, sitting an octave below the bassline.",
+  "Long, sustained sub-bass tones roll underneath like tectonic movement.",
+  "The deepest sub-bass is the loudest element by far, a constant subterranean pressure.",
+  "A bottomless low-end drone dominates the mix, weighted entirely toward the sub register.",
+]
+
+# Ambient synth bed in EVERY caption — atmosphere UNDER the beat, never
+# replacing it. This is what makes it "ambient" without making it beatless.
+atmosphere = [
+  "A soft ambient synth pad drifts continuously in the background, wide and atmospheric.",
+  "Beneath everything, a slow ambient synth wash provides a constant atmospheric bed.",
+  "A distant, sustained ambient pad hangs behind the groove for the entire track.",
+  "Warm ambient synth textures float far back in the mix, filling the space between hits.",
+  "An ethereal ambient pad drifts slowly underneath, adding depth and vast space.",
+  "A gauzy ambient synth layer sits behind the rhythm, wide and slowly evolving.",
+  "Sustained ambient synth chords glow faintly behind the drums throughout.",
+  "A submerged ambient pad breathes slowly beneath the beat, never rising to the front.",
+  "A cold, spacious ambient synth bed underpins the whole arrangement.",
+  "Eerie, sustained synth drones hang in the far background like distant city noise.",
+]
+
+closing = [
+  "bleak, mechanical and trance-inducing",
+  "cold, oppressive and hypnotic",
+  "desolate and quietly menacing",
+  "dystopian, dense and immersive",
+  "dark, spacious and unsettling",
+  "sombre, heavy and hypnotic",
+  "claustrophobic and foreboding",
+  "austere, glacial and remote",
+  "brooding, deep and suffocating",
+  "clandestine and slowly unfolding",
+  "nocturnal, vast and cold",
+  "stark, mechanical and unrelenting",
+  "neon-lit, rain-soaked and lonely",
+  "tense, clinical and paranoid",
+]
+
+# ==============================================================================
+# VARIANTS. Four close relatives of one sound, not four genres.
+# ==============================================================================
+
+[[genre]]
+name   = "cyberpunk techno"
+weight = 42
+bpm    = [80, 100]
+genre_phrase = [
+  "dark cyberpunk techno track", "hypnotic cyberpunk techno groove",
+  "dystopian electronic track", "slow-burning cyberpunk techno cut",
+  "subterranean cyberpunk groove", "tech-noir techno track",
+]
+foundation = [
+  "It is built on a deep, rumbling four-on-the-floor kick drum and crisp, tight hi-hats that drive steadily throughout.",
+  "A heavy, muffled kick anchors a relentless machine-like groove beneath ticking closed hats.",
+  "The rhythm is a steady, unhurried four-on-the-floor kick paired with dry electronic percussion.",
+  "A dull, weighty kick drives the track alongside sharp rimshots and mechanical hats.",
+  "A hypnotic, unbroken kick pattern locks with a syncopated electronic percussion loop.",
+]
+mid_layer = [
+  "A glitchy arpeggio pulses beneath cold, detuned synth stabs.",
+  "Muted synth chords echo through cavernous space as filtered noise sweeps drift past.",
+  "A hypnotic sequenced motif repeats endlessly under slowly shifting digital textures.",
+  "Sparse, reverberant stabs punctuate the groove while data-like blips scatter across the stereo field.",
+  "A cold, resonant lead traces a minimal figure far back behind the drums.",
+  "Filtered synth pulses interlock with the percussion, tightening and opening over time.",
+]
+development = [
+  "The track develops through long, gradual filter sweeps, with a sparse breakdown that strips to pads and delay tails before the groove returns.",
+  "It evolves slowly and patiently, layers accumulating across several minutes before receding again.",
+  "The arrangement stays hypnotic and minimal, marked only by subtle shifts in percussion and filtering.",
+  "A long midsection drops the kick, leaving drifting pads and distant noise, before the rhythm re-enters.",
+  "Tension builds through slow, creeping automation that never fully resolves.",
+]
+production = [
+  "dense and heavily compressed, a constant wall of sound with no dynamic peaks",
+  "dry, close and claustrophobic, with heavy saturation",
+  "tightly limited and consistently loud, every element glued together",
+  "gritty and analog, with a murky, oppressive low end",
+  "dense, saturated and compressed, with the low end pinned constantly",
+]
+
+[[genre]]
+name   = "tech-noir darksynth"
+weight = 28
+bpm    = [76, 96]
+genre_phrase = [
+  "tech-noir darksynth track", "brooding cyberpunk synth piece",
+  "dystopian retro-futuristic synth track", "nocturnal darksynth cut",
+  "neon-lit cyberpunk synth track",
+]
+foundation = [
+  "It is built on a punchy electronic drum pattern and a driving, pulsing octave bassline that never stops.",
+  "A steady mid-tempo beat and a relentless sequenced bassline propel the track forward.",
+  "A gated snare and deep analog kick lay down a patient, deliberate groove.",
+  "The rhythm is sparse and heavy, built from a drum machine and a growling, insistent bass sequence.",
+]
+mid_layer = [
+  "A cold analog arpeggio cycles relentlessly beneath wide, menacing synth pads.",
+  "A distorted synth lead traces a bleak melody through layers of chrome-bright texture.",
+  "Detuned saw chords swell slowly while an FM bell motif repeats in the distance.",
+  "A dark sequenced arpeggio drives forward under long, mournful pad chords.",
+  "Muted synth stabs alternate with a slow, melancholy lead drenched in reverb.",
+  "Glitching digital textures flicker over a steady, brooding synth sequence.",
+]
+development = [
+  "The arrangement builds patiently, adding synth layers before dropping to a stark, bass-only passage.",
+  "It moves through long cinematic swells with a quiet breakdown of pads and distant noise.",
+  "The track holds a steady hypnotic pulse throughout, evolving through timbre rather than structure.",
+  "An extended midsection strips back to a lone arpeggio before the full arrangement returns.",
+]
+production = [
+  "warm and analog, with heavy tape saturation and vintage reverb",
+  "dense and compressed, centred and monolithic",
+  "heavily compressed and dark, with the highs rolled well off",
+  "hazy and saturated, evoking worn magnetic tape",
+]
+
+[[genre]]
+name   = "industrial cyberpunk"
+weight = 20
+bpm    = [82, 100]
+genre_phrase = [
+  "industrial cyberpunk track", "harsh dystopian electronic piece",
+  "mechanical tech-noir groove", "corroded industrial cyberpunk cut",
+]
+foundation = [
+  "It is built on a distorted kick drum and clanging metallic percussion that pounds steadily throughout.",
+  "A crushing, overdriven kick drives the track beneath scrap-metal hits and hissing noise.",
+  "The rhythm is machine-like and unforgiving, built from a saturated kick and anvil-like strikes.",
+  "A relentless distorted kick anchors a pattern of rusted, resonant metal percussion.",
+]
+mid_layer = [
+  "Feedback drones and noise sweeps drift across a bed of grinding low-end texture.",
+  "A corroded synth stab repeats over the hum of distant machinery.",
+  "Layers of factory noise and reverberant clangs fill the space between kicks.",
+  "Harsh filtered noise bursts punctuate a monolithic, droning bassline.",
+  "Metallic resonances ring out over a churning, mechanical undercurrent.",
+]
+development = [
+  "The track grinds forward with little melodic relief, breaking only for a passage of noise and reverb before the kick returns.",
+  "It escalates in density and distortion throughout, becoming progressively more oppressive.",
+  "The arrangement is brutal and repetitive, punctuated by sudden drops into cavernous silence.",
+  "Tension mounts through accumulating layers of noise until the mix nearly collapses under itself.",
+]
+production = [
+  "raw, distorted and unforgiving, with crushing saturation",
+  "cavernous and reverberant, like an abandoned industrial floor",
+  "harsh and clipped, deliberately overdriven",
+  "dense and murky, with an oppressive low end",
+]
+
+[[genre]]
+name   = "deep cyberpunk"
+weight = 10
+bpm    = [74, 88]
+genre_phrase = [
+  "deep cyberpunk ambient track", "slow dystopian electronic piece",
+  "minimal tech-noir soundscape", "submerged cyberpunk groove",
+]
+foundation = [
+  "A slow, muted kick pulses steadily beneath vast sustained textures, quiet but always present.",
+  "The beat is minimal and distant — a soft, unhurried pulse anchoring an ocean of drone.",
+  "A restrained, deliberate kick marks time under enormous atmospheric layers.",
+  "Sparse percussion ticks quietly beneath sustained low frequencies and machine hum.",
+]
+mid_layer = [
+  "Slowly evolving metallic pads drift over the faint hum of server rooms.",
+  "Sparse, reverberant blips scatter irregularly across a wide stereo field.",
+  "Distant machinery and muffled signal chatter fade in and out of the mix.",
+  "Granular textures shimmer and decay above a subterranean rumble.",
+  "A hollow tape loop repeats beneath the sound of rain on concrete.",
+]
+development = [
+  "The piece unfolds with extreme patience, textures shifting and decaying while the pulse holds steady.",
+  "It remains hypnotic throughout, changing only through slow spectral drift.",
+  "Layers accumulate almost imperceptibly before dissolving back toward near-silence.",
+  "The arrangement breathes slowly, swelling and receding across its full length.",
+]
+production = [
+  "spacious, cold and hypnotic, evoking an abandoned control room deep underground",
+  "dense and enveloping, compressed into a continuous low drone",
+  "glacial and remote, with deep sub frequencies",
+  "close and airless, intimate and claustrophobic",
+]
