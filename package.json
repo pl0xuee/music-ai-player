@@ -2,6 +2,11 @@
   "name": "music-ai-player",
   "private": true,
   "version": "0.1.2",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/pl0xuee/music-ai-player.git"
+  },
   "type": "module",
   "scripts": {
     "dev": "vite",

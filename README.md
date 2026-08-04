@@ -328,7 +328,13 @@ end-to-end check instead.
 
 ---
 
-## Licence note
+## Licence
+
+This project is MIT-licensed — see [LICENSE](LICENSE). Use it, change it, ship
+it; keep the copyright notice.
+
+The rest of this section is about the *audio*, which the licence above does not
+speak to.
 
 ACE-Step 1.5 is MIT-licensed and runs entirely locally; generated audio is
 yours. No API keys, no per-track cost, no network needed after setup.
