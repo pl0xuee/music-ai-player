@@ -156,6 +156,11 @@ class FakeAudio {
   duration = NaN;
   preload = "";
   crossOrigin = null;
+  /**
+   * Where the crossfade lives now. A real element starts at 1; the player drops
+   * each deck to 0 as it builds it and raises the one it is starting.
+   */
+  volume = 1;
   playCount = 0;
   loadCount = 0;
   /** When set, `play()` returns this promise instead of resolving at once. */
@@ -364,11 +369,22 @@ export function install() {
       if (el === undefined) throw new Error(`no deck ${id}`);
       return el;
     },
-    /** The gain node the player wired the given deck's element to. */
-    gain(id) {
-      const node = ctx.deckGains.get(this.deck(id));
-      if (node === undefined) throw new Error(`deck ${id} is not wired up`);
-      return node;
+    /**
+     * The silent element the player mirrors onto the analyser.
+     *
+     * Built after both decks, so it is the third one. It is the *only* element
+     * wired into the audio graph: the decks deliberately are not, because
+     * routing one through `createMediaElementSource` takes it off the output
+     * device, which is what silenced every deck under WebKitGTK.
+     */
+    analysisEl() {
+      const el = elements[2];
+      if (el === undefined) throw new Error("no analysis element");
+      return el;
+    },
+    /** True when the player wired the analysis element to the analyser. */
+    analysisIsWired() {
+      return ctx.deckGains.has(this.analysisEl());
     },
     /** The deck currently carrying the active track. */
     activeEl() {

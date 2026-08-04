@@ -3,19 +3,12 @@ import type { Track } from "../types";
 /** Length of the equal-power crossfade between decks, in seconds. */
 export const CROSSFADE_SECONDS = 8;
 
-/** Points in the pre-computed gain curve handed to `setValueCurveAtTime`. */
-const CURVE_STEPS = 256;
-
 /**
  * Progress polling interval. `setInterval` rather than `requestAnimationFrame`:
  * rAF is throttled to a stop while the window is hidden, which would stall the
  * crossfade trigger whenever the player is minimised.
  */
 const TICK_MS = 100;
-
-/** Shown when the browser cannot open an audio output device at all. */
-const AUDIO_UNAVAILABLE =
-  "No audio output is available — the system has no usable audio device.";
 
 /**
  * How many selections `advance()` will try before giving up.
@@ -75,10 +68,22 @@ type StartResult =
   /** A newer play() took the player over while this one was waiting. */
   | "superseded";
 
+/**
+ * How far the analysis element may drift from the audible deck before it is
+ * pulled back. A spectrum a tenth of a second out is not something an eye can
+ * see, and correcting more eagerly than this would re-seek constantly.
+ */
+const ANALYSIS_DRIFT_SECONDS = 0.15;
+
 interface Deck {
   id: DeckId;
   el: HTMLAudioElement;
-  gain: GainNode;
+  /**
+   * The deck's own 0..1 fader, before the listening volume is applied. Kept
+   * separately from `el.volume` because that carries the product of the two,
+   * and the crossfade has to be able to reason about the fader alone.
+   */
+  level: number;
   track: Track | null;
   /** True once the element has a src and has been told to buffer. */
   armed: boolean;
@@ -87,16 +92,48 @@ interface Deck {
 /**
  * Two-deck player.
  *
- * Graph: each deck is `MediaElementAudioSourceNode -> GainNode -> analyser`,
- * and the shared analyser feeds a master gain (volume) then the destination.
- * Volume sits downstream of the analyser so the visualiser shows the mix rather
- * than the listening level.
+ * # Why the audio does not go through Web Audio
+ *
+ * The obvious design here — and the one this started as — is
+ * `MediaElementAudioSourceNode -> GainNode -> analyser -> master -> destination`,
+ * which gives sample-accurate fades on the audio clock for free. It cannot be
+ * used on Linux: WebKitGTK's Web Audio *output* stops emitting roughly a second
+ * after it starts. Measured with a bare `OscillatorNode` and no media element
+ * anywhere in the graph, so it is the destination itself, not
+ * `createMediaElementSource`. The graph keeps rendering perfectly the whole
+ * time — the analyser stays hot — WebKit simply stops handing the result to the
+ * audio device.
+ *
+ * So the decks never touch the graph. Each `<audio>` element plays straight to
+ * GStreamer's own sink, which works flawlessly, and the crossfade is done with
+ * `el.volume` stepped by the ticker instead of scheduled on an audio clock.
+ *
+ * # The analysis element
+ *
+ * The visualiser still needs a spectrum, and the analyser is the one part of
+ * Web Audio that does work. So a third element mirrors whatever the active deck
+ * is playing and *is* wired into the graph. Being in the graph is precisely
+ * what makes it inaudible — `createMediaElementSource` re-routes an element
+ * away from the output device — so it costs nothing but a second decode.
+ *
+ * `silentSink` sits at gain 0 between the analyser and the destination. The
+ * analyser is upstream of it, so it still sees the signal, while anything the
+ * destination might emit is zeroed. On this WebKit that is belt and braces;
+ * on an engine whose Web Audio output works it is what stops the analysis
+ * element from being heard alongside the deck.
  */
 export class Player {
   private readonly ctx: AudioContext;
   private readonly analyserNode: AnalyserNode;
-  private readonly master: GainNode;
+  /** Held at gain 0; see the class comment. */
+  private readonly silentSink: GainNode;
   private readonly decks: Record<DeckId, Deck>;
+  /**
+   * Silent mirror of the active deck, wired into the graph so the analyser has
+   * something to measure. Null where `createMediaElementSource` is missing, in
+   * which case the visualiser simply stays dark and playback is unaffected.
+   */
+  private readonly analysisEl: HTMLAudioElement | null;
   private readonly resolveSource: SourceResolver;
   private readonly listeners: ListenerSets = {
     trackchange: new Set(),
@@ -110,8 +147,21 @@ export class Player {
   private active: DeckId = "A";
   private nextSelector: NextSelector = () => null;
   private timer: number | null = null;
-  /** AudioContext timestamp the running fade began at, or null when idle. */
-  private fadeStartedAt: number | null = null;
+  /**
+   * Position of the *outgoing* element when the running fade began, or null
+   * when no fade is in flight.
+   *
+   * Measuring the fade against that element's own clock rather than a wall
+   * clock is what makes a pause freeze the handover: a paused element's
+   * `currentTime` stops, so progress stops with it and resumes exactly where it
+   * left off. The Web Audio version of this player had to suspend the whole
+   * AudioContext to get the same property.
+   *
+   * It also means a missed tick cannot corrupt anything. Progress is recomputed
+   * from the element each time rather than accumulated, so a throttled timer
+   * makes the fade coarser, never wrong.
+   */
+  private fadeFrom: number | null = null;
   /**
    * Length of the fade in flight. Shorter than `CROSSFADE_SECONDS` when the
    * outgoing track is too short to give the full handover to.
@@ -126,46 +176,108 @@ export class Player {
   private fadeSeq = 0;
   /** Guards against a stale preload — or a stale play — landing after a skip. */
   private preloadToken = 0;
-  /** True while `pause()` is holding the context suspended. */
-  private suspendedForPause = false;
   private volume = 0.8;
 
   constructor(resolveSource: SourceResolver) {
     this.resolveSource = resolveSource;
+    // Whatever rate the engine prefers. Nothing is played through this context
+    // — it exists only to drive the analyser — so the rate has no bearing on
+    // what is heard, and forcing one to match the output device was measured to
+    // make no difference to the Web Audio output bug either.
     this.ctx = new AudioContext();
 
     this.analyserNode = this.ctx.createAnalyser();
     this.analyserNode.fftSize = 2048;
     this.analyserNode.smoothingTimeConstant = 0.75;
 
-    this.master = this.ctx.createGain();
-    this.master.gain.value = this.volume;
+    // Zero, permanently. Listening volume is applied on the elements now, and
+    // nothing in this graph is ever meant to be heard.
+    this.silentSink = this.ctx.createGain();
+    this.silentSink.gain.value = 0;
 
-    this.analyserNode.connect(this.master);
-    this.master.connect(this.ctx.destination);
+    this.analyserNode.connect(this.silentSink);
+    this.silentSink.connect(this.ctx.destination);
 
     this.decks = { A: this.createDeck("A"), B: this.createDeck("B") };
+    this.analysisEl = this.createAnalysisElement();
+  }
+
+  /**
+   * The one element that *is* wired into the graph, feeding the analyser.
+   *
+   * It is never given a volume or asked to be quiet: routing an element through
+   * `createMediaElementSource` takes it off the output device by definition,
+   * which is the whole reason this works.
+   */
+  private createAnalysisElement(): HTMLAudioElement | null {
+    if (typeof this.ctx.createMediaElementSource !== "function") return null;
+    const el = new Audio();
+    el.preload = "auto";
+    el.crossOrigin = "anonymous";
+    this.ctx.createMediaElementSource(el).connect(this.analyserNode);
+    return el;
+  }
+
+  /**
+   * Keep the analysis element on the same track, at the same place, in the same
+   * play state as the audible deck.
+   *
+   * Called from the ticker and from every transport edge. Nothing here may
+   * throw into a caller: this is a cosmetic subsystem, and a visualiser that
+   * cannot keep up must never take the audio down with it.
+   */
+  private driveAnalysis(): void {
+    const el = this.analysisEl;
+    if (el === null) return;
+    const deck = this.decks[this.active];
+    const src = deck.el.getAttribute("src");
+
+    try {
+      if (src === null || deck.track === null) {
+        if (!el.paused) el.pause();
+        if (el.getAttribute("src") !== null) el.removeAttribute("src");
+        return;
+      }
+      if (el.getAttribute("src") !== src) {
+        el.src = src;
+      }
+      if (deck.el.paused) {
+        if (!el.paused) el.pause();
+        return;
+      }
+      if (Math.abs(el.currentTime - deck.el.currentTime) > ANALYSIS_DRIFT_SECONDS) {
+        // Throws if metadata has not landed yet, which the catch absorbs; the
+        // next tick will try again once the element knows its own length.
+        el.currentTime = deck.el.currentTime;
+      }
+      if (el.paused) {
+        void el.play().catch(() => {
+          /* the spectrum goes flat; the music does not stop */
+        });
+      }
+    } catch {
+      /* see above */
+    }
   }
 
   private createDeck(id: DeckId): Deck {
     const el = new Audio();
     el.preload = "auto";
-    // The asset protocol replies with `Access-Control-Allow-Origin` for the
-    // window origin. Without an explicit CORS request the media counts as
-    // cross-origin and MediaElementAudioSourceNode would output silence.
+    // The server replies with `Access-Control-Allow-Origin`, and asking for the
+    // CORS load explicitly keeps the element usable by the graph. It matters
+    // for the analysis element rather than these ones, but the decks share the
+    // same URLs and a mismatched request would fetch the file twice.
     el.crossOrigin = "anonymous";
+    // Deliberately *not* wired into the AudioContext: that is what would take
+    // it off the output device. See the class comment.
+    el.volume = 0;
 
-    const gain = this.ctx.createGain();
-    gain.gain.value = 0;
-    this.ctx.createMediaElementSource(el).connect(gain);
-    gain.connect(this.analyserNode);
-
-    const deck: Deck = { id, el, gain, track: null, armed: false };
+    const deck: Deck = { id, el, level: 0, track: null, armed: false };
 
     el.addEventListener("ended", () => {
       // Only reached when the crossfade did not take over first — a track
       // shorter than the fade, or nothing queued. Advance immediately.
-      if (this.active === id && this.fadeStartedAt === null) {
+      if (this.active === id && this.fadeFrom === null) {
         void this.advance();
       }
     });
@@ -198,7 +310,7 @@ export class Player {
   }
 
   get isCrossfading(): boolean {
-    return this.fadeStartedAt !== null;
+    return this.fadeFrom !== null;
   }
 
   get activeDeck(): DeckId {
@@ -210,49 +322,19 @@ export class Player {
   }
 
   /**
-   * Nudge the context awake without awaiting it. A context blocked by the
-   * autoplay policy returns a promise that stays pending until the user
-   * interacts, so awaiting it here would deadlock playback rather than delay it.
+   * Nudge the context awake without awaiting it.
    *
-   * It can also *reject* — a machine with no usable audio output answers
-   * `InvalidStateError: Failed to start the audio device` — and that has to be
-   * reported rather than left as an unhandled rejection the user never sees.
+   * Only the analyser depends on this now, so a context that never starts costs
+   * the visualiser and nothing else — which is why the failure is swallowed
+   * rather than reported. A context blocked by the autoplay policy returns a
+   * promise that stays pending until the user interacts, so awaiting it here
+   * would stall playback behind a purely cosmetic subsystem.
    */
   private unlock(): void {
     if (this.ctx.state !== "suspended") return;
-    void this.ctx.resume().catch((err: unknown) => {
-      this.emit("error", { message: `${AUDIO_UNAVAILABLE} (${describe(err)})` });
+    void this.ctx.resume().catch(() => {
+      /* no spectrum; the music is unaffected */
     });
-  }
-
-  /**
-   * Bring the context back after `pause()` suspended it.
-   *
-   * Awaiting is safe here and only here: the context was running a moment ago,
-   * so this is not the autoplay-policy case `unlock` must not await. Every
-   * entry point into playback goes through this, so the fade automation — which
-   * was frozen along with the clock — restarts together with the elements.
-   */
-  private async wake(): Promise<void> {
-    if (!this.suspendedForPause) {
-      this.unlock();
-      return;
-    }
-    this.suspendedForPause = false;
-    try {
-      await this.ctx.resume();
-    } catch (err) {
-      this.emit("error", { message: `${AUDIO_UNAVAILABLE} (${describe(err)})` });
-    }
-  }
-
-  /**
-   * True once the output device has failed for good. The browser closes the
-   * context when it cannot open a device, and a closed context never reopens,
-   * so every later attempt has to say so instead of arming a silent deck.
-   */
-  private get audioUnavailable(): boolean {
-    return this.ctx.state === "closed";
   }
 
   /**
@@ -299,10 +381,6 @@ export class Player {
 
   /** `play`, with the detail `advance` needs to decide whether to try again. */
   private async start(track: Track): Promise<StartResult> {
-    if (this.audioUnavailable) {
-      this.emit("error", { message: AUDIO_UNAVAILABLE });
-      return "failed";
-    }
     this.cancelFade();
     // The token the preload already used, now shared with play: a second click
     // landing while this one waits on IPC must win, and the one it overtook
@@ -313,11 +391,11 @@ export class Player {
     const deck = this.decks[this.active];
     const other = this.decks[this.idle];
     other.el.pause();
-    this.setGain(other, 0);
+    this.setLevel(other, 0);
 
     // Everything above is synchronous, so a click always unwinds the fade it
     // interrupted before anything else can observe the player.
-    await this.wake();
+    this.unlock();
     const url = await this.resolveUrl(track);
     if (token !== this.preloadToken) return "superseded";
     if (url === null) {
@@ -331,7 +409,7 @@ export class Player {
     deck.track = track;
     deck.armed = true;
     deck.el.src = url;
-    this.setGain(deck, 1);
+    this.setLevel(deck, 1);
 
     try {
       await deck.el.play();
@@ -346,6 +424,7 @@ export class Player {
 
     this.emit("trackchange", { track, deck: deck.id });
     this.emit("statechange", { playing: true });
+    this.driveAnalysis();
     this.startTicking();
     void this.preloadNext();
     return "started";
@@ -354,40 +433,32 @@ export class Player {
   async resume(): Promise<void> {
     const deck = this.decks[this.active];
     if (deck.track === null) return;
-    if (this.audioUnavailable) {
-      this.emit("error", { message: AUDIO_UNAVAILABLE });
-      return;
-    }
-    await this.wake();
+    this.unlock();
     try {
       await deck.el.play();
-      if (this.fadeStartedAt !== null) await this.decks[this.idle].el.play();
+      if (this.fadeFrom !== null) await this.decks[this.idle].el.play();
     } catch (err) {
       this.emit("error", { message: describe(err) });
       return;
     }
     this.emit("statechange", { playing: true });
+    this.driveAnalysis();
     this.startTicking();
   }
 
+  /**
+   * Both decks stop, and the fade stops with them.
+   *
+   * Nothing has to be done to freeze the handover: its progress is measured
+   * against the outgoing element's own clock, which a pause stops dead. Come
+   * back ten minutes later and the fade picks up exactly where it was, rather
+   * than having run to completion in silence and retired a track nobody heard.
+   */
   pause(): void {
     this.decks[this.active].el.pause();
     // Mid-fade both decks are audible, so the incoming one has to stop too.
-    if (this.fadeStartedAt !== null) this.decks[this.idle].el.pause();
-    // Suspending stops `ctx.currentTime`, and with it both the fade's progress
-    // and the gain curve already scheduled on the automation timeline. Without
-    // it a handover runs to completion on wall-clock time while the audio sits
-    // still: come back ten seconds later and the outgoing track has been
-    // retired mid-phrase, the incoming one starts from wherever the fade got
-    // to, and a trackchange has counted a play nobody heard.
-    if (this.ctx.state === "running") {
-      this.suspendedForPause = true;
-      void this.ctx.suspend().catch(() => {
-        // An engine that will not suspend still has to be resumable; the fade
-        // then finishes late rather than not at all.
-        this.suspendedForPause = false;
-      });
-    }
+    if (this.fadeFrom !== null) this.decks[this.idle].el.pause();
+    this.analysisEl?.pause();
     this.stopTicking();
     this.emit("statechange", { playing: false });
   }
@@ -414,8 +485,9 @@ export class Player {
       deck.armed = false;
       deck.el.pause();
       deck.el.removeAttribute("src");
-      this.setGain(deck, 0);
+      this.setLevel(deck, 0);
     }
+    this.driveAnalysis();
     this.stopTicking();
     this.emit("trackchange", { track: null, deck: this.active });
     this.emit("queued", { track: null });
@@ -428,14 +500,14 @@ export class Player {
     // Seeking out of the fade window has to unwind a fade already in flight.
     this.cancelFade();
     el.currentTime = Math.min(Math.max(0, seconds), el.duration);
+    this.driveAnalysis();
     this.emitProgress();
   }
 
   setVolume(level: number): void {
-    this.volume = Math.min(Math.max(level, 0), 1);
-    const now = this.ctx.currentTime;
-    this.master.gain.cancelScheduledValues(now);
-    this.master.gain.setTargetAtTime(this.volume, now, 0.02);
+    this.volume = clamp01(level);
+    this.applyLevel(this.decks.A);
+    this.applyLevel(this.decks.B);
   }
 
   getVolume(): number {
@@ -448,6 +520,8 @@ export class Player {
       this.decks[id].el.pause();
       this.decks[id].el.removeAttribute("src");
     }
+    this.analysisEl?.pause();
+    this.analysisEl?.removeAttribute("src");
     for (const key of Object.keys(this.listeners) as (keyof PlayerEventMap)[]) {
       this.listeners[key].clear();
     }
@@ -484,16 +558,26 @@ export class Player {
   }
 
   private tick(): void {
-    const el = this.decks[this.active].el;
+    const outgoing = this.decks[this.active];
+    const el = outgoing.el;
     this.emitProgress();
+    this.driveAnalysis();
 
-    if (this.fadeStartedAt !== null) {
-      const progress = Math.min((this.ctx.currentTime - this.fadeStartedAt) / this.fadeSeconds, 1);
-      this.emit("crossfade", {
-        from: this.decks[this.active].track,
-        to: this.decks[this.idle].track,
-        progress,
-      });
+    if (this.fadeFrom !== null) {
+      const incoming = this.decks[this.idle];
+      // Measured against the outgoing element rather than a wall clock, so a
+      // pause freezes it and a stall stretches it instead of running the
+      // handover on ahead of the audio.
+      const elapsed = el.currentTime - this.fadeFrom;
+      // The element reaching its end is also the fade reaching its end. Without
+      // this a fade whose last fraction of a second never arrives — the file
+      // being a hair shorter than its declared duration — would hang at 0.99.
+      const progress = el.ended ? 1 : Math.min(Math.max(elapsed / this.fadeSeconds, 0), 1);
+
+      this.setLevel(outgoing, equalPowerGain(progress, false));
+      this.setLevel(incoming, equalPowerGain(progress, true));
+
+      this.emit("crossfade", { from: outgoing.track, to: incoming.track, progress });
       if (progress >= 1) this.completeFade();
       return;
     }
@@ -556,7 +640,7 @@ export class Player {
     const incoming = this.decks[this.idle];
     if (!incoming.armed || incoming.track === null) return;
     // Claim the fade before awaiting so the next tick cannot start a second one.
-    this.fadeStartedAt = this.ctx.currentTime;
+    this.fadeFrom = outgoing.el.currentTime;
     this.fadeSeconds = fadeLengthFor(playableDuration(outgoing.el));
     const seq = this.fadeSeq;
 
@@ -565,7 +649,7 @@ export class Player {
     } catch (err) {
       // A cancel is what aborted this play(); it has already tidied up.
       if (seq !== this.fadeSeq) return;
-      this.fadeStartedAt = null;
+      this.fadeFrom = null;
       this.emit("error", { message: describe(err) });
       return;
     }
@@ -574,17 +658,19 @@ export class Player {
     // it here would fade the track the user just chose down to silence and
     // then promote the deck the cancel had already paused.
     if (seq !== this.fadeSeq) {
-      if (this.fadeStartedAt === null && this.decks[this.idle] === incoming) {
+      if (this.fadeFrom === null && this.decks[this.idle] === incoming) {
         incoming.el.pause();
         incoming.el.currentTime = 0;
       }
       return;
     }
 
-    const start = this.ctx.currentTime;
-    this.fadeStartedAt = start;
-    this.rampCurve(outgoing.gain, false, start, this.fadeSeconds);
-    this.rampCurve(incoming.gain, true, start, this.fadeSeconds);
+    // Re-read rather than reusing the value from before the await: the deck has
+    // been playing throughout it, and anchoring the fade to a stale position
+    // would start it already part-way through.
+    this.fadeFrom = outgoing.el.currentTime;
+    this.setLevel(outgoing, 1);
+    this.setLevel(incoming, 0);
     this.emit("crossfade", { from: outgoing.track, to: incoming.track, progress: 0 });
   }
 
@@ -599,16 +685,17 @@ export class Player {
       this.stop();
       return;
     }
-    this.fadeStartedAt = null;
+    this.fadeFrom = null;
 
     outgoing.track = null;
     outgoing.armed = false;
     outgoing.el.pause();
     outgoing.el.removeAttribute("src");
-    this.setGain(outgoing, 0);
+    this.setLevel(outgoing, 0);
 
     this.active = incoming.id;
-    this.setGain(incoming, 1);
+    this.setLevel(incoming, 1);
+    this.driveAnalysis();
 
     this.emit("crossfade", { from: null, to: incoming.track, progress: 1 });
     this.emit("trackchange", { track: incoming.track, deck: incoming.id });
@@ -616,18 +703,18 @@ export class Player {
   }
 
   private cancelFade(): void {
-    if (this.fadeStartedAt === null) return;
+    if (this.fadeFrom === null) return;
     // Anything still waiting on `beginFade`'s await has to learn that the fade
     // it claimed is gone, or it will re-arm the one we are unwinding here.
     this.fadeSeq += 1;
-    this.fadeStartedAt = null;
+    this.fadeFrom = null;
     const incoming = this.decks[this.idle];
     incoming.el.pause();
     // Back to the top: the deck stays armed with this track, and without the
     // rewind it would start a few seconds in — a little further every time.
     incoming.el.currentTime = 0;
-    this.setGain(incoming, 0);
-    this.setGain(this.decks[this.active], 1);
+    this.setLevel(incoming, 0);
+    this.setLevel(this.decks[this.active], 1);
   }
 
   /**
@@ -652,19 +739,26 @@ export class Player {
     this.stop();
   }
 
-  private setGain(deck: Deck, value: number): void {
-    const now = this.ctx.currentTime;
-    clearAutomation(deck.gain.gain, now);
-    deck.gain.gain.setValueAtTime(value, now);
+  /** Move a deck's own fader, and push the result to its element. */
+  private setLevel(deck: Deck, level: number): void {
+    deck.level = clamp01(level);
+    this.applyLevel(deck);
   }
 
-  private rampCurve(node: GainNode, rising: boolean, startTime: number, seconds: number): void {
-    // setValueCurveAtTime throws if any other event sits inside the curve's
-    // window, so the range must be cleared first — and only then, without
-    // planting a setValueAtTime at startTime itself.
-    clearAutomation(node.gain, startTime);
-    node.gain.setValueCurveAtTime(equalPowerCurve(rising), startTime, seconds);
+  /**
+   * `el.volume` carries the deck's fader times the listening volume.
+   *
+   * Both have to be folded together here because a media element has exactly
+   * one gain to give: the Web Audio version could keep the crossfade and the
+   * volume control on separate nodes, and this cannot.
+   */
+  private applyLevel(deck: Deck): void {
+    deck.el.volume = clamp01(deck.level * this.volume);
   }
+}
+
+function clamp01(value: number): number {
+  return Math.min(Math.max(value, 0), 1);
 }
 
 /** The element's duration, or null while it is unknown — 0, NaN or a stream. */
@@ -686,32 +780,22 @@ function fadeLengthFor(duration: number | null): number {
 }
 
 /**
- * Equal-power crossfade curve.
+ * Equal-power crossfade gain at `progress` (0..1) through the handover.
  *
  * A linear fade dips about 3 dB in the middle, because two uncorrelated signals
  * sum in power rather than amplitude: 0.5² + 0.5² = 0.5. A quarter cycle of
  * sine/cosine instead gives sin²(t·π/2) + cos²(t·π/2) = 1 at every instant, so
  * total power — and therefore perceived loudness — stays flat across the
  * handover.
+ *
+ * Sampled per tick rather than handed to `setValueCurveAtTime` as a 256-point
+ * table, because the fade now lives on `el.volume` and there is no automation
+ * timeline to schedule it on. At a 100 ms tick an 8-second fade lands in 80
+ * steps, and the steepest of them is about 0.1 dB.
  */
-function equalPowerCurve(rising: boolean): Float32Array {
-  const curve = new Float32Array(CURVE_STEPS);
-  for (let i = 0; i < CURVE_STEPS; i += 1) {
-    const angle = ((i / (CURVE_STEPS - 1)) * Math.PI) / 2;
-    curve[i] = rising ? Math.sin(angle) : Math.cos(angle);
-  }
-  return curve;
-}
-
-/**
- * `cancelScheduledValues` leaves an already-started curve running, so a fade in
- * flight also needs `cancelAndHoldAtTime` where the engine provides it.
- */
-function clearAutomation(param: AudioParam, at: number): void {
-  if (typeof param.cancelAndHoldAtTime === "function") {
-    param.cancelAndHoldAtTime(at);
-  }
-  param.cancelScheduledValues(at);
+function equalPowerGain(progress: number, rising: boolean): number {
+  const angle = (clamp01(progress) * Math.PI) / 2;
+  return rising ? Math.sin(angle) : Math.cos(angle);
 }
 
 function describe(err: unknown): string {

@@ -21,6 +21,96 @@ function playInOrder(player, tracks) {
   });
 }
 
+/* --- W1: the decks must stay out of the audio graph ------------------------ */
+
+test("W1: no deck is ever wired into the AudioContext", async (t) => {
+  const harness = install();
+  t.after(() => harness.dispose());
+  const { player } = harness;
+
+  const [a, b] = [makeTrack(1), makeTrack(2)];
+  playInOrder(player, [a, b]);
+  await player.play(a);
+  await harness.advance(1);
+
+  // This is the whole reason the player sounds at all on Linux. WebKitGTK's
+  // Web Audio *output* stops emitting about a second in — proven with a bare
+  // OscillatorNode, so it is the destination itself, not the media source node
+  // — and `createMediaElementSource` moves an element off the output device
+  // and onto that dead path. Wiring a deck up here is silent in every test but
+  // this one, and costs the user all sound a second after each track starts.
+  for (const id of ["A", "B"]) {
+    assert.equal(
+      harness.ctx.deckGains.has(harness.deck(id)),
+      false,
+      `deck ${id} must play straight to the media backend, not through Web Audio`,
+    );
+  }
+
+  // The analyser still has to be fed, so exactly one element does go through
+  // the graph: the silent mirror the visualiser reads.
+  assert.equal(harness.analysisIsWired(), true, "the analyser has nothing to measure");
+  assert.notEqual(harness.analysisEl(), harness.deck("A"));
+  assert.notEqual(harness.analysisEl(), harness.deck("B"));
+});
+
+test("W1: the analysis element follows the audible deck", async (t) => {
+  const harness = install();
+  t.after(() => harness.dispose());
+  const { player } = harness;
+
+  const [a, b] = [makeTrack(1), makeTrack(2)];
+  playInOrder(player, [a, b]);
+  await player.play(a);
+  await harness.advance(2);
+
+  const analysis = harness.analysisEl();
+  assert.equal(analysis.src, harness.activeEl().src, "same track as the one being heard");
+  assert.equal(analysis.paused, false, "and running, or the spectrum is flat");
+  assert.ok(
+    Math.abs(analysis.currentTime - harness.activeEl().currentTime) <= 0.2,
+    "and roughly in step with it",
+  );
+
+  // A pause has to take the mirror down too, or the visualiser keeps dancing
+  // to a track nobody is hearing.
+  player.pause();
+  assert.equal(analysis.paused, true);
+});
+
+test("W1: volume and the crossfade share el.volume", async (t) => {
+  const harness = install();
+  t.after(() => harness.dispose());
+  const { player } = harness;
+
+  const [a, b] = [makeTrack(1), makeTrack(2)];
+  playInOrder(player, [a, b]);
+  await player.play(a);
+  await harness.advance(1);
+
+  // A media element has one gain to give, so the deck's fader and the listening
+  // volume have to be multiplied together before they reach it.
+  player.setVolume(0.5);
+  assert.equal(harness.activeEl().volume, 0.5, "full fader times half volume");
+
+  player.setVolume(0);
+  assert.equal(harness.activeEl().volume, 0, "silence is reachable");
+
+  player.setVolume(1);
+  assert.equal(harness.activeEl().volume, 1);
+
+  // Mid-fade the two decks must still sum to roughly constant power rather
+  // than both sitting at the listening volume.
+  await harness.advance(12);
+  assert.equal(player.isCrossfading, true);
+  const outgoing = harness.activeEl().volume;
+  const incoming = harness.idleEl().volume;
+  assert.ok(
+    Math.abs(outgoing * outgoing + incoming * incoming - 1) < 0.05,
+    `equal power across the handover (got ${outgoing} and ${incoming})`,
+  );
+});
+
 /* --- C1: a missing file must not kill the player silently ------------------ */
 
 test("C1: a resolver that rejects mid-session does not strand the player", async (t) => {
@@ -112,9 +202,12 @@ test("M1: pausing mid-crossfade freezes it until the user comes back", async (t)
 
   const changesBeforePause = harness.named("trackchange").length;
   player.pause();
-  assert.equal(harness.ctx.state, "suspended", "the clock the fade reads must stop too");
   assert.equal(incoming.paused, true);
   const incomingAt = incoming.currentTime;
+  // The fade is measured against the outgoing element's own clock, so this is
+  // the clock that must stop. Nothing else has to be suspended to freeze the
+  // handover — a paused element simply stops counting.
+  const outgoingAt = harness.activeEl().currentTime;
 
   // Ten seconds away from the keyboard. The fade is eight seconds long.
   await harness.advance(10);
@@ -125,12 +218,17 @@ test("M1: pausing mid-crossfade freezes it until the user comes back", async (t)
   );
   assert.equal(player.isCrossfading, true);
   assert.equal(incoming.currentTime, incomingAt, "the incoming deck stayed put");
+  assert.equal(
+    harness.activeEl().currentTime,
+    outgoingAt,
+    "the clock the fade reads must stop too",
+  );
   assert.equal(player.currentTrack?.id, a.id);
 
   // Coming back finishes the handover from where it was, not from where the
   // wall clock got to.
   await player.resume();
-  assert.equal(harness.ctx.state, "running");
+  assert.equal(harness.activeEl().paused, false);
   await harness.advance(2);
   assert.equal(player.isCrossfading, true, "about 5s of the fade were still to run");
   await harness.advance(6);
@@ -167,7 +265,8 @@ test("M2: picking a track mid-fade is not undone by the fade that was cancelled"
   const chosenDeckId = player.activeDeck;
   await player.play(chosen);
   assert.equal(player.isCrossfading, false);
-  const curvesAfterChoice = harness.gain(chosenDeckId).gain.curves.length;
+  const chosenVolume = harness.deck(chosenDeckId).volume;
+  assert.ok(chosenVolume > 0, "the chosen track is audible");
 
   // …and only now does the incoming deck report that it started.
   gate.resolve();
@@ -176,9 +275,9 @@ test("M2: picking a track mid-fade is not undone by the fade that was cancelled"
   assert.equal(player.currentTrack?.id, chosen.id);
   assert.equal(player.isCrossfading, false, "the cancelled fade must not be re-armed");
   assert.equal(
-    harness.gain(chosenDeckId).gain.curves.length,
-    curvesAfterChoice,
-    "nothing may schedule a fade-out over the track the user just chose",
+    harness.deck(chosenDeckId).volume,
+    chosenVolume,
+    "nothing may fade down the track the user just chose",
   );
 
   // Long enough for the resurrected fade to have completed and promoted the
@@ -254,9 +353,23 @@ test("m2: a track shorter than the crossfade fades over half its length", async 
   // Half of six is three: the handover starts at t = 3, not t = 0.
   await harness.advance(1);
   assert.equal(player.isCrossfading, true);
-  const curve = harness.gain(active).gain.curves.at(-1);
-  assert.equal(curve.seconds, 3, "and the gain curve is the same length as the fade");
-  assert.equal(curve.rising, false);
+
+  const fullVolume = harness.deck(active).volume;
+  await harness.advance(0.5);
+  assert.ok(
+    harness.deck(active).volume < fullVolume,
+    "the outgoing deck is on its way down",
+  );
+
+  // The fade being three seconds rather than the full eight is what lets it
+  // finish inside what is left of the track. An 8-second fade would still be
+  // climbing when the file ran out, and the handover would never complete.
+  await harness.advance(3);
+  assert.equal(
+    player.currentTrack?.id,
+    b.id,
+    "the 3s handover completed within the 6s track",
+  );
 });
 
 test("m2: a duration that is not a number never triggers a fade", async (t) => {
