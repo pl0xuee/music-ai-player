@@ -97,6 +97,8 @@ interface Deck {
   track: Track | null;
   /** True once the element has a src and has been told to buffer. */
   armed: boolean;
+  /** Removers for the DOM listeners this deck installed; run on dispose. */
+  detach: (() => void)[];
 }
 
 /**
@@ -328,7 +330,7 @@ export class Player {
     // it off the output device. See the class comment.
     el.volume = 0;
 
-    const deck: Deck = { id, el, level: 0, track: null, armed: false };
+    const deck: Deck = { id, el, level: 0, track: null, armed: false, detach: [] };
 
     // The element can be started and stopped by things that never go through
     // this class: a media key picked up by the engine's own media session, the
@@ -337,7 +339,15 @@ export class Player {
     // otherwise play on with the transport still reading "Play" and the clock
     // frozen. These two listeners are what make the elements the source of
     // truth rather than this class's idea of them.
-    el.addEventListener("play", () => {
+    const on = <K extends keyof HTMLMediaElementEventMap>(
+      type: K,
+      handler: (event: HTMLMediaElementEventMap[K]) => void,
+    ): void => {
+      el.addEventListener(type, handler);
+      deck.detach.push(() => el.removeEventListener(type, handler));
+    };
+
+    on("play", () => {
       if (this.active !== id) return;
       this.reportPlaying(this.isPlaying);
       if (this.isPlaying) {
@@ -345,19 +355,19 @@ export class Player {
         this.startTicking();
       }
     });
-    el.addEventListener("pause", () => {
+    on("pause", () => {
       if (this.active !== id) return;
       this.reportPlaying(this.isPlaying);
     });
 
-    el.addEventListener("ended", () => {
+    on("ended", () => {
       // Only reached when the crossfade did not take over first — a track
       // shorter than the fade, or nothing queued. Advance immediately.
       if (this.active === id && this.fadeFrom === null) {
         void this.advance();
       }
     });
-    el.addEventListener("error", () => {
+    on("error", () => {
       // Detaching a src fires a spurious error; ignore decks we have retired.
       if (el.getAttribute("src") === null || deck.track === null) return;
       this.emit("error", { message: `Deck ${id} could not play "${deck.track.title}".` });
@@ -627,11 +637,24 @@ export class Player {
   dispose(): void {
     this.stopTicking();
     for (const id of ["A", "B"] as const) {
-      this.decks[id].el.pause();
-      this.decks[id].el.removeAttribute("src");
+      const deck = this.decks[id];
+      deck.el.pause();
+      deck.el.removeAttribute("src");
+      // `load()` after clearing the source is what actually makes the engine
+      // let go of the decoder and its audio stream. Without it a disposed
+      // player keeps its output alive: a session that hot-reloads a few times
+      // ends up with a stack of them, and the one the keyboard is talking to is
+      // no longer the one making the sound.
+      deck.el.load();
+      // These were added in `createDeck` and never taken off, so every listener
+      // held a reference to this player and kept the whole thing — decks,
+      // context and all — from being collected.
+      for (const off of deck.detach) off();
+      deck.detach.length = 0;
     }
     this.analysisEl?.pause();
     this.analysisEl?.removeAttribute("src");
+    this.analysisEl?.load();
     for (const key of Object.keys(this.listeners) as (keyof PlayerEventMap)[]) {
       this.listeners[key].clear();
     }
