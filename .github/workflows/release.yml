@@ -22,11 +22,16 @@ permissions:
 
 jobs:
   bundle:
-    # Note: the AppImage inherits this runner's glibc, so it will not start on a
-    # distribution older than the runner. `ubuntu-latest` is the newest, which
-    # is the narrowest; drop to `ubuntu-22.04` for a bundle that runs almost
-    # anywhere. Nothing else in the file needs to change.
-    runs-on: ubuntu-latest
+    # Pinned deliberately, and not a version to bump on sight. The AppImage
+    # inherits this runner's glibc and refuses to start on anything older, so
+    # the runner decides who can run the download rather than merely how the
+    # build happens. 22.04 carries glibc 2.35, which every currently-supported
+    # distribution meets. `ubuntu-latest` produces an identical bundle while
+    # quietly narrowing that audience each time GitHub repoints the label —
+    # a regression that shows up only as "it does not launch" on someone
+    # else's machine, never in a build log. Raise it when there is a reason to
+    # drop older systems, not because it looks stale.
+    runs-on: ubuntu-22.04
 
     steps:
       - uses: actions/checkout@v4
