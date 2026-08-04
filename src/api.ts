@@ -19,7 +19,7 @@ import type {
   YtTools,
 } from "./types";
 import { EMPTY_TOOLS, IDLE_RUN, OFFLINE_ENGINE } from "./types";
-import { DEV_STYLES, devJobs, devSourceUrl, devStats, devTracks } from "./dev-fixtures";
+import { DEV_STYLES, devJobs, devPanel, devSourceUrl, devStats, devTracks } from "./dev-fixtures";
 
 /**
  * `npm run dev` can be opened in a plain browser, where there is no Tauri IPC
@@ -34,7 +34,9 @@ export const IN_TAURI = hasBridge();
 
 export function listTracks(genre: string | null): Promise<Track[]> {
   if (!IN_TAURI) {
-    const tracks = devTracks();
+    // `#empty` reaches the one screen that becomes unreachable the moment the
+    // library has anything in it.
+    const tracks = devPanel() === "empty" ? [] : devTracks();
     return Promise.resolve(
       genre === null || genre === "all" ? tracks : tracks.filter((t) => t.genre === genre),
     );
