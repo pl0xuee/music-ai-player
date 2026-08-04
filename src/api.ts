@@ -294,6 +294,27 @@ export function onFileDrop(handlers: {
   };
 }
 
+/**
+ * Tell the desktop what is playing, so its media keys, panel applet and lock
+ * screen have something real to work with.
+ *
+ * Fire-and-forget: this is presentation for another process, and failing to
+ * update it must never surface as an error in the player.
+ */
+export function reportNowPlaying(now: {
+  title: string;
+  artist: string;
+  playing: boolean;
+  position: number;
+  duration: number;
+  id: number;
+}): void {
+  if (!IN_TAURI) return;
+  void invoke("mpris_now_playing", { now }).catch(() => {
+    /* no MPRIS on this desktop */
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Updates
 // ---------------------------------------------------------------------------

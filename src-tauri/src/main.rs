@@ -5,6 +5,7 @@ mod desktop;
 mod engine;
 mod library;
 mod local;
+mod mpris;
 mod proc;
 mod stream;
 mod youtube;
@@ -98,6 +99,10 @@ fn main() {
             }
             app.manage(keys);
 
+            // MPRIS, so the desktop's media keys reach this window rather than
+            // the anonymous service WebKit publishes for the <audio> element.
+            mpris::attach(&handle);
+
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -139,6 +144,7 @@ fn main() {
             youtube::youtube_cancel_all,
             youtube::youtube_clear_finished,
             desktop::media_key_status,
+            mpris::mpris_now_playing,
             engine::engine_status,
             engine::engine_start,
             engine::engine_stop,

@@ -33,6 +33,7 @@ import {
   onFileDrop,
   onTransport,
   pruneMissing,
+  reportNowPlaying,
   rateTrack,
   removeItem,
   renamePlaylist,
@@ -458,6 +459,24 @@ export default function App() {
       }
     });
   }, []);
+
+  // What the desktop shows and what its media keys act on. Sent on every track
+  // change and play/pause, and on the whole-second boundary while playing so
+  // the position it reports does not drift from the truth.
+  const lastReport = useRef("");
+  useEffect(() => {
+    const key = `${current?.id ?? 0}|${String(playing)}|${Math.floor(position)}`;
+    if (key === lastReport.current) return;
+    lastReport.current = key;
+    reportNowPlaying({
+      title: current?.title ?? "",
+      artist: current === null ? "" : (current.uploader ?? current.genre),
+      playing,
+      position,
+      duration,
+      id: current?.id ?? 0,
+    });
+  }, [current, duration, playing, position]);
 
   // -- local files ----------------------------------------------------------
 

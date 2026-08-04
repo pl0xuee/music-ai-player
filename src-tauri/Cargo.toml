@@ -30,6 +30,11 @@ tauri-plugin-dialog = { version = "2", default-features = false, features = ["xd
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
 
+# MPRIS, written directly against zbus in `mpris.rs`. Already in the tree via
+# the desktop portal, and compiled with its tokio feature — which is exactly
+# why the obvious crate for this could not work here.
+zbus = "5"
+
 serde = { version = "1", features = ["derive"] }
 # yt-dlp reports each item as a one-line JSON object on stdout; see youtube.rs.
 serde_json = "1"
