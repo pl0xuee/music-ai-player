@@ -136,6 +136,25 @@ pub struct Library {
     schema_ready: Arc<Mutex<bool>>,
 }
 
+/// Where an installed copy keeps its library: `$XDG_DATA_HOME/music-ai-player`,
+/// or `~/.local/share/music-ai-player` when that is unset.
+///
+/// The `library/` level is kept rather than flattened because the tracks
+/// directory is derived from the database's parent, so the layout on disc is
+/// the same whether the app was installed or is being run from a checkout.
+fn user_data_library() -> PathBuf {
+    let base = std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .or_else(|| {
+            std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local").join("share"))
+        })
+        .unwrap_or_else(|| PathBuf::from("."));
+    base.join("music-ai-player")
+        .join(LIBRARY_DIRNAME)
+        .join(DB_FILENAME)
+}
+
 impl Library {
     /// Resolve the database path once at startup.
     ///
@@ -144,6 +163,14 @@ impl Library {
     /// ancestors — `cargo tauri dev` runs the binary from `src-tauri/`, while a
     /// bundled build is usually launched from the project root, and both should
     /// find the same library.
+    ///
+    /// Falling back to the working directory is wrong for an installed bundle.
+    /// An AppImage runs with its cwd inside its own read-only mount, so that
+    /// fallback resolved to `/tmp/.mount_xxxx/usr/library` and every write
+    /// failed with `Read-only file system` — the app opened, and nothing it did
+    /// could persist. A checkout is recognised by an existing `library/`
+    /// directory (the repository ships one); anything else is treated as an
+    /// installed copy and gets the user's data directory.
     pub fn discover() -> Self {
         if let Some(raw) = std::env::var_os(LIBRARY_ENV) {
             let p = PathBuf::from(raw);
@@ -156,14 +183,22 @@ impl Library {
         }
 
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        let fallback = cwd.join(LIBRARY_DIRNAME).join(DB_FILENAME);
+        // An existing database wins outright, wherever it sits.
         for dir in cwd.ancestors() {
             let candidate = dir.join(LIBRARY_DIRNAME).join(DB_FILENAME);
             if candidate.is_file() {
                 return Self::at(candidate);
             }
         }
-        Self::at(fallback)
+        // No database yet. A `library/` directory means a checkout being run
+        // in place, which should keep its library beside the source.
+        for dir in cwd.ancestors() {
+            let dir = dir.join(LIBRARY_DIRNAME);
+            if dir.is_dir() {
+                return Self::at(dir.join(DB_FILENAME));
+            }
+        }
+        Self::at(user_data_library())
     }
 
     /// Point at an explicit `library.db`. Used by tests and by the importer's

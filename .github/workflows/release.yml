@@ -62,36 +62,123 @@ jobs:
       - name: Install JavaScript dependencies
         run: npm ci
 
-      - name: Build, sign and publish
+      # Build only. Publishing is done below, because the AppImage has to be
+      # repaired after it is built and before anything signs it.
+      - name: Build the bundles
         uses: tauri-apps/tauri-action@v0
+        with:
+          tagName: ""
+          args: --bundles appimage,deb
+
+      # The AppImage ships a copy of every library the webview links, and one
+      # of them cannot be allowed to win over the host's.
+      #
+      # `libwayland-client.so.0` is placed ahead of the system copy by AppRun's
+      # LD_LIBRARY_PATH. On a distribution whose Mesa is newer than the runner's
+      # — which is most of them, and gets worse as this image ages — the two
+      # disagree and WebKit dies at startup with:
+      #
+      #     Could not create default EGL display: EGL_BAD_PARAMETER. Aborting...
+      #
+      # The window then opens, paints its background colour, and stays empty
+      # forever. It looks like a broken app rather than a broken bundle, and it
+      # cannot be diagnosed from the window itself. Dropping the bundled copy
+      # lets the host's own Wayland client library load, which is the one that
+      # matches the host's Mesa. Verified against the 0.1.2 AppImage: removing
+      # this file alone turns a black window into a rendered interface.
+      - name: Repack the AppImage against the host's libwayland
+        run: |
+          set -euo pipefail
+          cd src-tauri/target/release/bundle/appimage
+          APP="$(ls ./*.AppImage)"
+          ./"$APP" --appimage-extract >/dev/null
+          test -f squashfs-root/usr/lib/libwayland-client.so.0 \
+            || { echo "::error::bundled libwayland-client.so.0 not found — has the bundler changed?"; exit 1; }
+          rm -f squashfs-root/usr/lib/libwayland-client.so.0
+          curl -fsSL -o appimagetool \
+            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x appimagetool
+          ./appimagetool --appimage-extract-and-run squashfs-root repacked >/dev/null
+          mv repacked "$APP"
+          rm -rf squashfs-root appimagetool
+          echo "repacked $APP"
+
+      # Signing happens here rather than during the build, because the bundle
+      # changed after the build. A signature made before the repack would be
+      # checked against different bytes and the update would be refused.
+      - name: Sign the bundles
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Signs the bundles and `latest.json`. The public half is baked into
-          # tauri.conf.json, and the app verifies against it before installing.
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        with:
-          # Empty on a manual run, which makes tauri-action build without
-          # publishing.
-          tagName: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
-          releaseName: Music AI Player __VERSION__
-          releaseBody: |
-            A local desktop music player for long coding sessions.
+        run: |
+          set -euo pipefail
+          cd src-tauri/target/release/bundle
+          for f in appimage/*.AppImage deb/*.deb; do
+            rm -f "$f.sig"
+            npx --yes @tauri-apps/cli signer sign \
+              --private-key "$TAURI_SIGNING_PRIVATE_KEY" \
+              --password "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" \
+              "$f"
+            test -s "$f.sig" || { echo "::error::no signature written for $f"; exit 1; }
+          done
 
-            Download the `.AppImage`, make it executable and run it:
+      # `latest.json` is what the app reads on "Check for updates", and it is
+      # written by hand for the same reason the signing is: tauri-action would
+      # have described the pre-repack bundle.
+      #
+      # The URL uses dots where the filename has spaces, because that is what
+      # GitHub renames the asset to on upload. Getting this wrong produces a
+      # release that looks correct and an updater that 404s.
+      - name: Write latest.json
+        if: github.ref_type == 'tag'
+        run: |
+          set -euo pipefail
+          cd src-tauri/target/release/bundle
+          VERSION="$(node -p "require('$GITHUB_WORKSPACE/src-tauri/tauri.conf.json').version")"
+          APP="$(basename ./appimage/*.AppImage)"
+          ASSET="${APP// /.}"
+          SIG="$(cat ./appimage/*.AppImage.sig)"
+          URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/${ASSET}"
+          node -e '
+            const [version, signature, url] = process.argv.slice(1);
+            const platform = { signature, url };
+            process.stdout.write(JSON.stringify({
+              version,
+              notes: "See the release notes.",
+              pub_date: new Date().toISOString(),
+              platforms: {
+                "linux-x86_64": platform,
+                "linux-x86_64-appimage": platform,
+              },
+            }, null, 2));
+          ' "$VERSION" "$SIG" "$URL" > latest.json
+          cat latest.json
 
-            ```bash
-            chmod +x Music*AI*Player_*.AppImage
-            ./Music*AI*Player_*.AppImage
-            ```
+      - name: Publish the release
+        if: github.ref_type == 'tag'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          cd src-tauri/target/release/bundle
+          gh release create "$GITHUB_REF_NAME" \
+            --title "Music AI Player ${GITHUB_REF_NAME#v}" \
+            --notes "$(cat <<'NOTES'
+          A local desktop music player for long coding sessions.
 
-            Installed builds update themselves from here — Settings → Updates.
-          releaseDraft: false
-          prerelease: false
-          # Writes `latest.json` beside the bundles. This is the whole update
-          # channel: without it the app has nothing to check.
-          includeUpdaterJson: true
-          args: --bundles appimage,deb
+          Download the `.AppImage`, make it executable and run it:
+
+          ```bash
+          chmod +x Music*AI*Player_*.AppImage
+          ./Music*AI*Player_*.AppImage
+          ```
+
+          Installed builds update themselves from here — Settings → Updates.
+          NOTES
+          )" \
+            latest.json \
+            appimage/*.AppImage appimage/*.AppImage.sig \
+            deb/*.deb deb/*.deb.sig
 
       # Only reached on a manual run, where nothing was published.
       - name: Upload bundles as artifacts
