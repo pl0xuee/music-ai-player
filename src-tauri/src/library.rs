@@ -561,29 +561,18 @@ pub fn mark_played(lib: State<'_, Library>, id: i64) -> Result<(), String> {
     Ok(())
 }
 
-/// Absolute filesystem path of a ready track, after granting the asset
-/// protocol access to that exact file.
-///
-/// The frontend passes the result to `convertFileSrc()` from
-/// `@tauri-apps/api/core`, which turns it into the `asset://` (Linux/macOS) or
-/// `http://asset.localhost` (Windows) URL an `<audio>` element can load.
-/// Tauri v2 will not serve a path that is outside the asset protocol scope, so
-/// the `allow_file` call here is what makes the returned URL actually usable
-/// for libraries stored outside the default `library/` directory.
+/// Absolute filesystem path of a ready track whose file is still on disk.
 ///
 /// `None` covers every way a track can turn out to have no source — no such
 /// ready row, a row with a NULL path, and a row whose file has since been
-/// deleted or moved. The frontend's `SourceResolver` is typed
-/// `Promise<string | null>` and both of its call sites already handle `null` by
-/// leaving the deck empty and moving on; the missing-file case used to be an
-/// `Err` instead, which crosses the bridge as a rejected promise nothing is
-/// waiting to catch. A genuine failure — the query itself, or the scope
-/// widening — is still an error.
-fn source_path<R: Runtime>(
-    app: &AppHandle<R>,
-    lib: &Library,
-    id: i64,
-) -> Result<Option<String>, String> {
+/// deleted or moved. Only a genuine failure, meaning the query itself, is an
+/// error.
+///
+/// Free-standing and `AppHandle`-free so the media server in [`crate::stream`]
+/// can call it from its own connection threads, which have no Tauri runtime in
+/// scope and want none: resolving an id to a path is a library question, and
+/// the webview permission dance below is not part of it.
+pub fn ready_path(lib: &Library, id: i64) -> Result<Option<String>, String> {
     let Some(conn) = lib.open()? else {
         return Ok(None);
     };
@@ -604,6 +593,34 @@ fn source_path<R: Runtime>(
     if !Path::new(&path).is_file() {
         return Ok(None);
     }
+    Ok(Some(path))
+}
+
+/// [`ready_path`], plus a grant of asset-protocol access to that exact file.
+///
+/// The frontend no longer builds a media URL out of this — the media server
+/// does that, because `asset://` cannot drive an `<audio>` element under
+/// WebKitGTK at all (see [`crate::stream`]). What the frontend still needs from
+/// this command is the *question it answers*: is there a playable file behind
+/// this id right now? A `null` is what makes a deck skip a track whose file has
+/// been deleted instead of stalling on it.
+///
+/// The scope widening stays because `fetch`ing an `asset://` URL does work, and
+/// that is still the path any non-media read of a track file would take.
+///
+/// The frontend's `SourceResolver` is typed `Promise<string | null>` and both of
+/// its call sites already handle `null` by leaving the deck empty and moving on;
+/// the missing-file case used to be an `Err` instead, which crosses the bridge
+/// as a rejected promise nothing is waiting to catch. A genuine failure — the
+/// query, or the scope widening — is still an error.
+fn source_path<R: Runtime>(
+    app: &AppHandle<R>,
+    lib: &Library,
+    id: i64,
+) -> Result<Option<String>, String> {
+    let Some(path) = ready_path(lib, id)? else {
+        return Ok(None);
+    };
 
     app.asset_protocol_scope()
         .allow_file(&path)

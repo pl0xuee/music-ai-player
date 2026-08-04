@@ -54,7 +54,65 @@ export function markPlayed(id: number): Promise<void> {
 }
 
 /**
- * How many sources stay resident.
+ * URL prefix of the loopback media server, asked for once.
+ *
+ * The promise itself is the cache, not its result: two decks resolve their
+ * sources concurrently on the first play, and awaiting a stored promise makes
+ * that one IPC round trip instead of a race between two.
+ *
+ * `null` means the server did not come up. Rare — it is an ephemeral loopback
+ * port — but it is a survivable state rather than a broken player, so it falls
+ * through to `bufferedSourceUrl` below.
+ */
+let mediaBase: Promise<string | null> | null = null;
+
+function streamBase(): Promise<string | null> {
+  mediaBase ??= invoke<string | null>("media_base_url").catch(() => null);
+  return mediaBase;
+}
+
+/**
+ * Resolve a track to a URL the `<audio>` element can load.
+ *
+ * Tauri's own answer to this is the asset protocol: `track_source` hands back
+ * an absolute path and widens the protocol scope to it, and `convertFileSrc`
+ * rewrites that into `asset://localhost/…`. It does not work for media on
+ * Linux. WebKitGTK plays `<audio>`/`<video>` through GStreamer, which resolves
+ * the source URL itself and has no handler for WebKit's custom schemes, so
+ * `asset://` answers `fetch` and range requests perfectly while every media
+ * element built on it fails with `MEDIA_ERR_SRC_NOT_SUPPORTED` and never
+ * reports a duration. Measured on webkit2gtk 2.52.5 for every URL shape —
+ * encoded path, literal path, no host, `http://asset.localhost` — with and
+ * without `crossOrigin`. That is the whole reason this player had never made a
+ * sound on Linux.
+ *
+ * HTTP is the transport GStreamer does speak, so the tracks come off a loopback
+ * server instead (`src-tauri/src/stream.rs`), and this is a URL for it. Byte
+ * ranges mean playback starts on the first few kilobytes and a seek is a fresh
+ * request rather than a download, whatever the file weighs.
+ *
+ * `track_source` is still called, and still first: its filesystem check is what
+ * distinguishes a dead row from a live one, and answering `null` here is how a
+ * deck knows to skip rather than stall. The path it returns is only used by the
+ * fallback.
+ */
+export async function trackSourceUrl(id: number): Promise<string | null> {
+  if (!IN_TAURI) return null;
+
+  const path = await invoke<string | null>("track_source", { id });
+  if (path === null) {
+    forgetBuffered(id);
+    return null;
+  }
+
+  const base = await streamBase();
+  if (base !== null) return `${base}/track/${id}`;
+
+  return bufferedSourceUrl(id, path);
+}
+
+/**
+ * How many buffered sources stay resident.
  *
  * Two decks are ever loaded at once; the third slot absorbs a preload racing a
  * click without evicting a URL a deck is still opening. Kept deliberately tight
@@ -67,49 +125,19 @@ const SOURCE_CACHE_LIMIT = 3;
 const sourceCache = new Map<number, string>();
 
 /**
- * Resolve a track to a URL the `<audio>` element can load.
+ * The fallback for a machine where the media server could not bind.
  *
- * The Rust command hands back an absolute filesystem path and simultaneously
- * widens the asset-protocol scope to that file; `convertFileSrc` then rewrites
- * it into the custom-protocol URL for the current platform (`asset://localhost/…`
- * on Linux and macOS, `http://asset.localhost/…` on Windows). Reading the path
- * directly would be blocked — Tauri v2 only serves files through this protocol.
+ * Fetching through the asset protocol *does* work — it is only media elements
+ * that cannot consume the URL — so the bytes are pulled here and handed over as
+ * an object URL, which a media element loads normally. This is what shipped
+ * before the server existed, and it plays.
  *
- * That URL cannot go straight onto a media element on Linux. WebKitGTK loads
- * `<audio>`/`<video>` through GStreamer, which resolves the source itself and
- * has no handler for WebKit's custom schemes: `asset://` answers `fetch` and
- * range requests perfectly, yet every media element built on it fails on load
- * with `MEDIA_ERR_SRC_NOT_SUPPORTED` and never reports a duration. Measured on
- * webkit2gtk 2.52.5, for every URL shape — encoded path, literal path, no host,
- * and `http://asset.localhost` — with and without `crossOrigin`. That is the
- * whole reason this player had never made a sound on Linux.
- *
- * So the bytes are fetched here, where the asset protocol does work, and handed
- * over as an object URL, which the media element loads normally. The library is
- * local, so this is a disk read, not a download: 20 MB resolves in ~40 ms.
- *
- * The cost is that this buffers the *whole* file before the deck can start, and
- * that scales badly: a 272 MB two-hour mix measured 5.6 s to first sound and put
- * the web process at 537 MB resident. Streaming it over a loopback HTTP server
- * with range support would fix both — WebKit's media backend handles `http://`
- * happily — and that is the right shape for this eventually.
+ * It is the fallback and not the default because it buffers the whole file
+ * before the first sample: a 272 MB two-hour mix measured 5.6 s to first sound
+ * and put the web process at 537 MB resident, and every seek is against a blob
+ * that has to be complete.
  */
-export async function trackSourceUrl(id: number): Promise<string | null> {
-  if (!IN_TAURI) return null;
-
-  // Asked every time, even on a cache hit: this is the call that checks the
-  // file is still on disk, and a row whose file has gone has to answer null
-  // rather than play on out of memory.
-  const path = await invoke<string | null>("track_source", { id });
-  if (path === null) {
-    const stale = sourceCache.get(id);
-    if (stale !== undefined) {
-      sourceCache.delete(id);
-      URL.revokeObjectURL(stale);
-    }
-    return null;
-  }
-
+async function bufferedSourceUrl(id: number, path: string): Promise<string> {
   const cached = sourceCache.get(id);
   if (cached !== undefined) {
     // Re-insert so the deck that just asked for it is the last to be evicted.
@@ -137,6 +165,14 @@ export async function trackSourceUrl(id: number): Promise<string | null> {
   }
 
   return url;
+}
+
+/** Drop a buffered source whose file has gone, so it cannot play on out of memory. */
+function forgetBuffered(id: number): void {
+  const stale = sourceCache.get(id);
+  if (stale === undefined) return;
+  sourceCache.delete(id);
+  URL.revokeObjectURL(stale);
 }
 
 // ---------------------------------------------------------------------------

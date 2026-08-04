@@ -17,6 +17,15 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rusqlite = { version = "0.40", features = ["bundled"] }
 
+# The loopback media server in `stream.rs`. Both of these are already in the
+# tree as transitive dependencies of Tauri's own HTTP stack, so naming them here
+# adds nothing to the build — it only stops us from hand-rolling the two pieces
+# of parsing that are worth getting exactly right. `http-range` in particular
+# implements RFC 7233's awkward split, where a malformed Range must be ignored
+# but an unsatisfiable one must be refused with a 416.
+httparse = "1"
+http-range = "0.1"
+
 # Signalling a *process group* (SIGINT for a clean, resumable cancel; SIGKILL as
 # the backstop) and PR_SET_PDEATHSIG both need raw syscalls that std does not
 # expose. See `engine::proc`.

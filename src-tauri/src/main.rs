@@ -5,6 +5,7 @@ mod desktop;
 mod engine;
 mod library;
 mod proc;
+mod stream;
 mod youtube;
 
 use tauri::{Emitter, Manager, RunEvent, WindowEvent};
@@ -46,6 +47,22 @@ fn main() {
             // Imported audio lives under the library root, so the same scope
             // widening covers it; `track_source` still grants per-file access
             // for libraries pointed elsewhere.
+
+            // How audio actually reaches a deck. The asset protocol above can
+            // serve bytes to `fetch` but cannot drive an `<audio>` element under
+            // WebKitGTK at all, so tracks stream over loopback instead; see
+            // `stream.rs`. A bind failure is survivable — the frontend falls
+            // back to buffering whole files — so it is reported, not fatal.
+            let media = stream::MediaServer::start(lib.clone()).unwrap_or_else(|err| {
+                eprintln!("media server unavailable: {err}");
+                eprintln!("playback will fall back to buffering each track in full");
+                stream::MediaServer::unavailable()
+            });
+            if let Some(base) = media.base_url() {
+                println!("media server: {base}");
+            }
+            app.manage(media);
+
             let downloads = youtube::Downloads::new(lib.clone());
             youtube::spawn_worker(downloads.clone(), handle.clone());
             app.manage(downloads);
@@ -95,6 +112,7 @@ fn main() {
             library::rate_track,
             library::mark_played,
             library::track_source,
+            stream::media_base_url,
             library::list_playlists,
             library::create_playlist,
             library::rename_playlist,
