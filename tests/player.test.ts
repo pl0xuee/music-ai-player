@@ -10,7 +10,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { install, makeTrack } from "./harness.ts";
+import { flush, install, makeTrack } from "./harness.ts";
 
 /** Play the given list in order, then stop. */
 function playInOrder(player, tracks) {
@@ -111,6 +111,107 @@ test("W1: volume and the crossfade share el.volume", async (t) => {
   );
 });
 
+/* --- W2: the transport must not wait on the engine ------------------------- */
+
+test("W2: resume updates the transport even if play() never settles", async (t) => {
+  const harness = install();
+  t.after(() => harness.dispose());
+  const { player } = harness;
+
+  const a = makeTrack(1);
+  playInOrder(player, [a]);
+  harness.setDuration(a.id, 30);
+
+  await player.play(a);
+  await harness.advance(3);
+  player.pause();
+  assert.equal(harness.last("statechange").playing, false);
+
+  // WebKitGTK does not reliably settle the promise `play()` returns on a
+  // resume. Gating the interface on it left the scrub frozen and the button
+  // still reading "Play" while the audio ran — so hold it open here and the
+  // transport must come back anyway.
+  const el = harness.activeEl();
+  const gate = { promise: null, resolve: null };
+  gate.promise = new Promise((resolve) => {
+    gate.resolve = resolve;
+  });
+  el.pendingPlay = gate;
+
+  const resuming = player.resume();
+  await flush();
+
+  assert.equal(
+    harness.last("statechange").playing,
+    true,
+    "the transport must report playback without waiting on the engine",
+  );
+
+  // The ticker has to be running, because it is what redraws the scrub and the
+  // clock. Counted rather than measured off the element: the fake stays paused
+  // until its deferred play() settles, so its own clock cannot move here, while
+  // the real one is already playing by this point.
+  const before = harness.progressTicks;
+  await harness.advance(1);
+  assert.ok(
+    harness.progressTicks > before,
+    "and the ticker must be running, so the scrub keeps being redrawn",
+  );
+
+  gate.resolve();
+  await resuming;
+});
+
+test("W2: the ticker corrects a transport that has drifted out of step", async (t) => {
+  const harness = install();
+  t.after(() => harness.dispose());
+  const { player } = harness;
+
+  const a = makeTrack(1);
+  playInOrder(player, [a]);
+  harness.setDuration(a.id, 30);
+  await player.play(a);
+  await harness.advance(1);
+  assert.equal(harness.last("statechange").playing, true);
+
+  // The element stops without going through the player — an engine giving up
+  // on a stream, which is exactly the case that used to leave the button
+  // reading "Pause" forever.
+  harness.activeEl().pause();
+  await harness.advance(0.5);
+
+  assert.equal(
+    harness.last("statechange").playing,
+    false,
+    "whatever the elements are doing wins",
+  );
+});
+
+test("W2: a deck left running with no track is not reported as playing", async (t) => {
+  const harness = install();
+  t.after(() => harness.dispose());
+  const { player } = harness;
+
+  const a = makeTrack(1);
+  playInOrder(player, [a]);
+  harness.setDuration(a.id, 30);
+  await player.play(a);
+  await harness.advance(1);
+  assert.equal(player.isPlaying, true);
+
+  // `stop` clears the deck. An element the engine leaves running afterwards —
+  // an abandoned load whose play() resolved late — must not put the transport
+  // back into "Pause" beside a stage reading "nothing playing".
+  player.stop();
+  const el = harness.activeEl();
+  el.paused = false;
+  el.ended = false;
+  await harness.advance(0.5);
+
+  assert.equal(player.isPlaying, false, "no track means not playing, whatever the element does");
+  assert.equal(harness.last("statechange").playing, false);
+});
+
 /* --- C1: a missing file must not kill the player silently ------------------ */
 
 test("C1: a resolver that rejects mid-session does not strand the player", async (t) => {
@@ -155,8 +256,14 @@ test("C1: play() on a track with no file says the player stopped", async (t) => 
   assert.equal(await player.play(track), false);
   assert.equal(harness.last("error").message.includes(track.title), true);
   // Without this the button keeps reading "Pause" for a player that will never
-  // make another sound.
-  assert.deepEqual(harness.last("statechange"), { playing: false });
+  // make another sound. `statechange` is deduplicated, so the guarantee is
+  // about the state the transport is left holding rather than about an event
+  // arriving: nothing may ever have claimed playback.
+  assert.equal(
+    harness.named("statechange").some((event) => event.payload.playing),
+    false,
+    "nothing may report playback for a track that never started",
+  );
   assert.equal(player.isPlaying, false);
 });
 
@@ -177,7 +284,12 @@ test("C1: a library whose files have all gone stops instead of spinning", async 
   await player.skip();
 
   assert.equal(player.currentTrack, null);
-  assert.deepEqual(harness.last("statechange"), { playing: false });
+  assert.equal(
+    harness.named("statechange").some((event) => event.payload.playing),
+    false,
+    "nothing may report playback when every file has gone",
+  );
+  assert.equal(player.isPlaying, false);
   assert.ok(harness.resolveCalls.length <= 12, "the retry loop is bounded");
 });
 

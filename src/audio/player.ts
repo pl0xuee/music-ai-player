@@ -73,7 +73,17 @@ type StartResult =
  * pulled back. A spectrum a tenth of a second out is not something an eye can
  * see, and correcting more eagerly than this would re-seek constantly.
  */
-const ANALYSIS_DRIFT_SECONDS = 0.15;
+const ANALYSIS_DRIFT_SECONDS = 0.35;
+
+/**
+ * Floor on how often the analysis element may be re-seeked.
+ *
+ * A seek in a two-hour file is not free, and correcting drift the moment it
+ * appears costs more time than it recovers — which grows the drift, which
+ * triggers another seek. This is what keeps a cosmetic subsystem from
+ * competing with playback for the same pipeline.
+ */
+const ANALYSIS_RESYNC_MS = 4000;
 
 interface Deck {
   id: DeckId;
@@ -114,7 +124,15 @@ interface Deck {
  * Web Audio that does work. So a third element mirrors whatever the active deck
  * is playing and *is* wired into the graph. Being in the graph is precisely
  * what makes it inaudible — `createMediaElementSource` re-routes an element
- * away from the output device — so it costs nothing but a second decode.
+ * away from the output device.
+ *
+ * It is not free, and the cost scales with the file. WebKit buffers each media
+ * element into its own temp file under `/var/tmp`, so the mirror doubles that:
+ * three copies of a 272 MB mix were measured resident at once, and the extra
+ * write lands in front of the first sample. `preload = "none"` and a throttled
+ * resync keep it as cheap as this design can be, but the real fix for a library
+ * of long files is to compute the spectrum from the audio once, on the Rust
+ * side, rather than decoding the track a second time to look at it.
  *
  * `silentSink` sits at gain 0 between the analyser and the destination. The
  * analyser is upstream of it, so it still sees the signal, while anything the
@@ -176,6 +194,22 @@ export class Player {
   private fadeSeq = 0;
   /** Guards against a stale preload — or a stale play — landing after a skip. */
   private preloadToken = 0;
+  /**
+   * The last `playing` value handed to listeners.
+   *
+   * Kept so the ticker can notice the interface disagreeing with the elements
+   * and put it right. Media engines do not always settle `play()`, and the
+   * transport must not be the thing that stays wrong when one does not.
+   */
+  private reportedPlaying = false;
+  /** When the analysis element was last pulled back into step. */
+  private lastResync = 0;
+  /**
+   * How long a full handover may take. Settable, because how much overlap feels
+   * right depends on the music: eight seconds suits a droning mix and is far
+   * too long between two short tracks.
+   */
+  private crossfadeMax = CROSSFADE_SECONDS;
   private volume = 0.8;
 
   constructor(resolveSource: SourceResolver) {
@@ -188,7 +222,16 @@ export class Player {
 
     this.analyserNode = this.ctx.createAnalyser();
     this.analyserNode.fftSize = 2048;
-    this.analyserNode.smoothingTimeConstant = 0.75;
+    // Range and smoothing both set explicitly, because the defaults are wrong
+    // for looking at music. `-100..-30` puts ordinary programme material at the
+    // very top of the window, and the per-band tilt correction then pushes it
+    // past the ceiling: every bar sits at maximum and nothing in the track can
+    // stand out from anything else. Opening the top up to -10 dB leaves the
+    // headroom that makes a loud moment read as loud.
+    this.analyserNode.minDecibels = -90;
+    this.analyserNode.maxDecibels = -10;
+    // 0.75 is smooth enough to blur a beat into the bar next to it.
+    this.analyserNode.smoothingTimeConstant = 0.68;
 
     // Zero, permanently. Listening volume is applied on the elements now, and
     // nothing in this graph is ever meant to be heard.
@@ -212,7 +255,12 @@ export class Player {
   private createAnalysisElement(): HTMLAudioElement | null {
     if (typeof this.ctx.createMediaElementSource !== "function") return null;
     const el = new Audio();
-    el.preload = "auto";
+    // `none`, unlike the decks. This element never needs to be ready ahead of
+    // time — it is told to play at the same moment the deck is already playing
+    // — and asking it to buffer eagerly makes WebKit write a second full copy
+    // of the track to disk before the first one has finished arriving. On a
+    // 272 MB mix that is 272 MB of pure overhead in front of the first sample.
+    el.preload = "none";
     el.crossOrigin = "anonymous";
     this.ctx.createMediaElementSource(el).connect(this.analyserNode);
     return el;
@@ -245,7 +293,15 @@ export class Player {
         if (!el.paused) el.pause();
         return;
       }
-      if (Math.abs(el.currentTime - deck.el.currentTime) > ANALYSIS_DRIFT_SECONDS) {
+      // Correcting drift means seeking, and a seek in a long file is expensive
+      // enough that doing it eagerly turns into a storm: the correction costs
+      // more time than the drift it was fixing, so the drift grows and it seeks
+      // again. Only worth doing when the spectrum would be visibly wrong, and
+      // never more than once every few seconds.
+      const drift = Math.abs(el.currentTime - deck.el.currentTime);
+      const now = Date.now();
+      if (drift > ANALYSIS_DRIFT_SECONDS && now - this.lastResync > ANALYSIS_RESYNC_MS) {
+        this.lastResync = now;
         // Throws if metadata has not landed yet, which the catch absorbs; the
         // next tick will try again once the element knows its own length.
         el.currentTime = deck.el.currentTime;
@@ -304,9 +360,17 @@ export class Player {
     return this.decks[this.idle].track;
   }
 
+  /**
+   * A track is audible right now.
+   *
+   * The deck having a track is part of the question, not an assumption. An
+   * element can be left running by a load that was then abandoned, and without
+   * this the ticker's reconciliation reports playback for a stage that says
+   * "nothing playing" — a transport reading Pause with no title beside it.
+   */
   get isPlaying(): boolean {
-    const el = this.decks[this.active].el;
-    return !el.paused && !el.ended;
+    const deck = this.decks[this.active];
+    return deck.track !== null && !deck.el.paused && !deck.el.ended;
   }
 
   get isCrossfading(): boolean {
@@ -402,7 +466,7 @@ export class Player {
       this.emit("error", { message: `No audio file for "${track.title}".` });
       // Nothing new started, so say what is true now. Without this the button
       // keeps reading "Pause" and the visualiser stays lit for a dead player.
-      this.emit("statechange", { playing: this.isPlaying });
+      this.reportPlaying(this.isPlaying);
       return "failed";
     }
 
@@ -415,35 +479,52 @@ export class Player {
       await deck.el.play();
     } catch (err) {
       // A newer load is what aborted this one; that is not an error to report.
-      if (token !== this.preloadToken) return "superseded";
+      // The token catches most of those, and `isAborted` catches the rest —
+      // the engine can reject the old play *after* the new one has already
+      // taken the token back, and that rejection is about a deck nobody is
+      // listening to any more.
+      if (token !== this.preloadToken || isAborted(err)) return "superseded";
       this.emit("error", { message: describe(err) });
-      this.emit("statechange", { playing: this.isPlaying });
+      this.reportPlaying(this.isPlaying);
       return "failed";
     }
     if (token !== this.preloadToken) return "superseded";
 
     this.emit("trackchange", { track, deck: deck.id });
-    this.emit("statechange", { playing: true });
+    this.reportPlaying(true);
     this.driveAnalysis();
     this.startTicking();
     void this.preloadNext();
     return "started";
   }
 
+  /**
+   * Start the current deck again after a pause.
+   *
+   * The interface is updated *before* `play()` is awaited, not after. That
+   * promise resolves when playback actually begins, and WebKitGTK does not
+   * reliably settle it on a resume — gating on it leaves the transport frozen,
+   * the scrub stuck and the button still reading "Play" while the audio runs.
+   * Announcing the intent and correcting on failure is both more robust and
+   * more responsive; `tick` reconciles anything that disagrees afterwards.
+   */
   async resume(): Promise<void> {
     const deck = this.decks[this.active];
     if (deck.track === null) return;
     this.unlock();
+
+    this.reportPlaying(true);
+    this.driveAnalysis();
+    this.startTicking();
+
     try {
       await deck.el.play();
       if (this.fadeFrom !== null) await this.decks[this.idle].el.play();
     } catch (err) {
-      this.emit("error", { message: describe(err) });
-      return;
+      if (!isAborted(err)) this.emit("error", { message: describe(err) });
+      this.reportPlaying(this.isPlaying);
+      if (!this.isPlaying) this.stopTicking();
     }
-    this.emit("statechange", { playing: true });
-    this.driveAnalysis();
-    this.startTicking();
   }
 
   /**
@@ -460,7 +541,7 @@ export class Player {
     if (this.fadeFrom !== null) this.decks[this.idle].el.pause();
     this.analysisEl?.pause();
     this.stopTicking();
-    this.emit("statechange", { playing: false });
+    this.reportPlaying(false);
   }
 
   async toggle(): Promise<void> {
@@ -491,7 +572,7 @@ export class Player {
     this.stopTicking();
     this.emit("trackchange", { track: null, deck: this.active });
     this.emit("queued", { track: null });
-    this.emit("statechange", { playing: false });
+    this.reportPlaying(false);
   }
 
   seek(seconds: number): void {
@@ -502,6 +583,15 @@ export class Player {
     el.currentTime = Math.min(Math.max(0, seconds), el.duration);
     this.driveAnalysis();
     this.emitProgress();
+  }
+
+  /** Length of a full handover, in seconds. Clamped to something musical. */
+  setCrossfade(seconds: number): void {
+    this.crossfadeMax = Math.min(Math.max(seconds, 0), 20);
+  }
+
+  getCrossfade(): number {
+    return this.crossfadeMax;
   }
 
   setVolume(level: number): void {
@@ -544,6 +634,19 @@ export class Player {
     }
   }
 
+  /**
+   * The only way `statechange` is emitted.
+   *
+   * Deduplicated, so the ticker can assert the truth ten times a second without
+   * re-rendering anything, and so a single field always holds what the
+   * interface currently believes.
+   */
+  private reportPlaying(playing: boolean): void {
+    if (playing === this.reportedPlaying) return;
+    this.reportedPlaying = playing;
+    this.emit("statechange", { playing });
+  }
+
   // -- scheduling -----------------------------------------------------------
 
   private startTicking(): void {
@@ -562,6 +665,10 @@ export class Player {
     const el = outgoing.el;
     this.emitProgress();
     this.driveAnalysis();
+    // Whatever the elements are actually doing wins. This is the one loop that
+    // is guaranteed to run while a deck is loaded, so it is the right place to
+    // catch a transport that has drifted out of step with the audio.
+    this.reportPlaying(this.isPlaying);
 
     if (this.fadeFrom !== null) {
       const incoming = this.decks[this.idle];
@@ -585,7 +692,7 @@ export class Player {
     if (el.paused) return;
     const length = playableDuration(el);
     if (length === null) return;
-    if (length - el.currentTime <= fadeLengthFor(length)) {
+    if (length - el.currentTime <= fadeLengthFor(length, this.crossfadeMax)) {
       void this.beginFade();
     }
   }
@@ -641,7 +748,7 @@ export class Player {
     if (!incoming.armed || incoming.track === null) return;
     // Claim the fade before awaiting so the next tick cannot start a second one.
     this.fadeFrom = outgoing.el.currentTime;
-    this.fadeSeconds = fadeLengthFor(playableDuration(outgoing.el));
+    this.fadeSeconds = fadeLengthFor(playableDuration(outgoing.el), this.crossfadeMax);
     const seq = this.fadeSeq;
 
     try {
@@ -650,7 +757,7 @@ export class Player {
       // A cancel is what aborted this play(); it has already tidied up.
       if (seq !== this.fadeSeq) return;
       this.fadeFrom = null;
-      this.emit("error", { message: describe(err) });
+      if (!isAborted(err)) this.emit("error", { message: describe(err) });
       return;
     }
 
@@ -774,9 +881,9 @@ function playableDuration(el: HTMLAudioElement): number | null {
  * at t = 0, so the track would never once be heard on its own — and the gain
  * curve would still be climbing when the file ran out.
  */
-function fadeLengthFor(duration: number | null): number {
-  if (duration === null) return CROSSFADE_SECONDS;
-  return Math.min(CROSSFADE_SECONDS, duration / 2);
+function fadeLengthFor(duration: number | null, max: number): number {
+  if (duration === null) return max;
+  return Math.min(max, duration / 2);
 }
 
 /**
@@ -796,6 +903,23 @@ function fadeLengthFor(duration: number | null): number {
 function equalPowerGain(progress: number, rising: boolean): number {
   const angle = (clamp01(progress) * Math.PI) / 2;
   return rising ? Math.sin(angle) : Math.cos(angle);
+}
+
+/**
+ * True when a `play()` was cut short by a newer load rather than by a failure.
+ *
+ * Changing `src`, or clearing it, rejects any play still in flight with
+ * `AbortError` — "The play() request was interrupted because the media was
+ * removed from the document". That is the normal consequence of clicking a
+ * second track, and showing it to the user is noise about an internal race
+ * they did not cause and cannot act on.
+ */
+function isAborted(err: unknown): boolean {
+  if (err instanceof Error) {
+    if (err.name === "AbortError") return true;
+    return err.message.includes("interrupted") || err.message.includes("aborted");
+  }
+  return false;
 }
 
 function describe(err: unknown): string {

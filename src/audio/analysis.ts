@@ -350,6 +350,10 @@ export class KickDetector {
     this.lastFlux = 0;
     this.lastThreshold = 0;
     this.intervals.length = 0;
+    // The tempo has to go too. It is derived from the intervals just cleared,
+    // so keeping it leaves the panel reading "BPM ~107" beside "standby" —
+    // a measurement of a track that stopped playing.
+    this.tempo = null;
   }
 
   get bpm(): number | null {

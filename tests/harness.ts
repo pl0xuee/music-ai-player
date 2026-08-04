@@ -325,10 +325,15 @@ export function install() {
   };
 
   const events = [];
+  // Progress fires ten times a second and would bury everything else, so it is
+  // counted rather than kept. The count is what tells a test whether the
+  // ticker — and therefore the scrub and the clock — is running at all.
+  let progressCount = 0;
   const player = new Player(resolver);
   for (const name of ["trackchange", "progress", "statechange", "crossfade", "queued", "error"]) {
     player.on(name, (payload) => {
-      if (name !== "progress") events.push({ name, payload });
+      if (name === "progress") progressCount += 1;
+      else events.push({ name, payload });
     });
   }
 
@@ -412,6 +417,10 @@ export function install() {
     },
     named(name) {
       return events.filter((event) => event.name === name);
+    },
+    /** How many progress ticks have been emitted; see above. */
+    get progressTicks() {
+      return progressCount;
     },
     last(name) {
       const matching = this.named(name);
