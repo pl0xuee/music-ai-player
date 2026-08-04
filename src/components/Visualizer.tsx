@@ -28,18 +28,19 @@ interface Props {
 }
 
 /* --- palette -------------------------------------------------------------- */
-/* Mirrors styles.css. One accent; everything else is greyscale, so anything
-   glowing is by definition something happening right now. */
+/* Mirrors theme-metal.css :root -- canvas cannot read CSS custom properties,
+   so these are kept in sync by hand. Fully neutral: brightness alone signals
+   activity, matching the metal theme where colour is reserved for lamps. */
 
 // Illuminated-readout grey, matched to the metal theme (--bright/#e8edf1
 // family). Was hardcoded amber; the theme could not reach it from CSS.
 const READOUT = "205, 214, 220";
-const RULE = "#1b1f21";
-const RULE_INNER = "rgba(27, 31, 33, 0.72)";
-const RULE_WARM = "#2b2418";
-const DIM = "#5d6568";
+const RULE = "#14171a";
+const RULE_INNER = "rgba(20, 23, 26, 0.72)";
+const RULE_UNLIT = "#4d545c";
+const DIM = "#9aa3ab";
 
-const FONT = `"JetBrains Mono", "IBM Plex Mono", "DejaVu Sans Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace`;
+const FONT = `"JetBrains Mono", "Fira Mono", "IBM Plex Mono", "DejaVu Sans Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace`;
 const LABEL_PX = 9;
 const TRACKING = 1.5;
 
@@ -605,7 +606,7 @@ function paintBrackets(ctx: CanvasRenderingContext2D, v: View, pulse: number): v
     }
   };
 
-  draw(RULE_WARM, arm);
+  draw(RULE_UNLIT, arm);
   if (pulse > 0.01) draw(`rgba(${READOUT}, ${(0.55 * pulse).toFixed(4)})`, arm);
 }
 
@@ -630,7 +631,7 @@ function paintHead(ctx: CanvasRenderingContext2D, v: View, state: HeadState): vo
   const groupX = v.w - v.padX - (lampSize + 5 + trackedWidth("KICK", charAdv));
 
   ctx.fillStyle =
-    state.pulse > 0.01 ? `rgba(${READOUT}, ${(0.2 + 0.8 * state.pulse).toFixed(4)})` : RULE_WARM;
+    state.pulse > 0.01 ? `rgba(${READOUT}, ${(0.2 + 0.8 * state.pulse).toFixed(4)})` : RULE_UNLIT;
   ctx.fillRect(groupX, lampY, lampSize, lampSize);
   ctx.fillStyle = state.pulse > 0.35 ? `rgba(${READOUT}, 0.9)` : DIM;
   tracked(ctx, "KICK", groupX + lampSize + 5, y, charAdv);
