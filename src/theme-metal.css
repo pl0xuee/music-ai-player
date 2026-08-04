@@ -1147,3 +1147,705 @@ textarea::placeholder {
     transition: none;
   }
 }
+
+/* ===========================================================================
+   PART TWO — the side panel, playlists and the import queue.
+
+   Three components landed after the theme was written: the view tabs, the
+   playlist panel and the YouTube import drawer. Nothing new is invented here.
+   The same four moves do all of it:
+
+     raised plate   light hairline on the top lip, dark foot, fixed-px shading
+     machined well  dark hairline on the top lip, light foot
+     engraved       Fira Sans Compressed, uppercase, tracked out
+     readout        the mono stack, tabular figures
+
+   Two measured facts drove the colour picks, both of which look fine by eye
+   and are not:
+     - --dim (#9aa3ab) on a raised key face (#434950) is 3.55:1. Anything
+       sitting ON a key is #adb5bc or brighter, never --dim.
+     - --dim on the download card (#33383e) is 4.62:1 and drops to 4.23:1 once
+       the card brightens for a running job — so card body copy is #adb5bc.
+
+   The one red lamp this file gains is the left edge of a download that is
+   actually transferring. That is the whole budget; nothing else is red.
+=========================================================================== */
+
+/* --- side panel: view tabs ------------------------------------------------ */
+/* Two hardware tab keys seated in a machined recess. Which view you are in is
+   carried by bevel direction — the live key is pressed INTO the recess and the
+   idle key stands proud of it. */
+
+.tabs {
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid #101315;
+  border-radius: 3px;
+  background-color: var(--panel-lo);
+  background-image: var(--well);
+  box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.75), inset 0 -1px 0 rgba(255, 255, 255, 0.07);
+}
+
+.tab {
+  height: 24px;
+  padding: 0 11px;
+  border: 1px solid #101315;
+  border-radius: 2px;
+  background: var(--plate-key);
+  box-shadow: var(--edge-up), 0 1px 1px rgba(0, 0, 0, 0.4);
+  font-family: var(--label);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  color: var(--text); /* 6.68:1 on the key face; --dim would be 3.55:1 */
+  text-shadow: 0 1px 0 rgba(0, 0, 0, 0.5);
+  transition: background 110ms ease, color 110ms ease, box-shadow 110ms ease;
+}
+
+.tab:hover {
+  background: var(--plate-key-hi);
+  color: var(--bright);
+}
+
+/* Pressed in, and brighter. Same latch as .btn.is-on. */
+.tab.is-on {
+  border-color: #0b0d0f;
+  background: var(--plate-key-down);
+  color: var(--bright);
+  box-shadow:
+    inset 0 1px 0 rgba(0, 0, 0, 0.9),
+    inset 0 3px 5px -2px rgba(0, 0, 0, 0.7),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.08);
+}
+
+.tab:focus-visible {
+  outline-offset: 2px;
+  box-shadow: 0 0 0 4px rgba(0, 0, 0, 0.55);
+}
+
+/* A counter window milled into the key face, not a badge printed on it — so
+   the digits get a dark ground and clear the 4.5:1 the key face cannot. */
+.tab-count {
+  min-width: 17px;
+  padding: 0 4px;
+  border: 1px solid #101315;
+  border-radius: 2px;
+  background: #15181b;
+  box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.8), inset 0 -1px 0 rgba(255, 255, 255, 0.06);
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+  font-size: 10px;
+  letter-spacing: 0;
+  text-align: center;
+  color: #aab2b9; /* 8.30:1 */
+}
+
+.tab.is-on .tab-count {
+  border-color: #0b0d0f;
+  color: var(--bright);
+}
+
+/* --- playlist panel: control block ---------------------------------------- */
+
+/* Its own module on the faceplate, grooved off from the list below it, the way
+   .lib-head and .gp-section are. */
+.pl-controls {
+  gap: 8px;
+  padding: 12px 16px;
+  border-bottom: 1px solid #101315;
+  box-shadow: inset 0 -2px 0 -1px rgba(255, 255, 255, 0.05);
+}
+
+.pl-actions {
+  gap: 5px;
+}
+
+.btn.is-tight {
+  height: 28px;
+  padding: 0 8px;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+}
+
+/* The name editor's field and key are one strip, so they share a height. */
+.pl-name {
+  gap: 6px;
+  align-items: stretch;
+}
+
+.pl-name > .btn {
+  height: 30px;
+}
+
+/* --- text fields ---------------------------------------------------------- */
+/* `.input` carries no type attribute, so the element-level safety net further
+   up this file never matches it. Without these it renders as a bare box. */
+
+.input {
+  height: 30px;
+  padding: 0 9px;
+  border: 1px solid #101315;
+  border-radius: 2px;
+  background-color: var(--panel-lo);
+  background-image: var(--well);
+  box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.78), inset 0 -1px 0 rgba(255, 255, 255, 0.06);
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--bright);
+}
+
+.input.is-area {
+  height: auto;
+  padding: 9px 10px;
+  line-height: 1.55;
+}
+
+.input::placeholder {
+  color: #7f888f; /* 4.74:1 on the well */
+}
+
+/* A field with the light on it. */
+.input:focus {
+  border-color: #5d666d;
+  box-shadow:
+    inset 0 1px 0 rgba(0, 0, 0, 0.78),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.09);
+}
+
+/* styles.css kills the outline on :focus. Same specificity, later in the
+   cascade, so the ring comes back for keyboard users only. */
+.input:focus-visible {
+  outline: 1px solid #dfe6ec;
+  outline-offset: 2px;
+  box-shadow:
+    inset 0 1px 0 rgba(0, 0, 0, 0.78),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.09),
+    0 0 0 4px rgba(0, 0, 0, 0.55);
+}
+
+/* Unpowered, not faded out: a 0.4 opacity wash took the yt-dlp placeholder —
+   which is the instructions — down to unreadable. The well simply loses its
+   bevel and the ink drops one step, and both still measure over 4.5:1. */
+.input:disabled {
+  opacity: 1;
+  border-color: #16191c;
+  background-image: none;
+  box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.5);
+  color: #838c93; /* 5.00:1 */
+}
+
+.input:disabled::placeholder {
+  color: #7f888f; /* 4.74:1 */
+}
+
+/* --- playlist panel: empty state ------------------------------------------ */
+/* The hint is the only thing on the plate when nothing is picked, so it is a
+   placard let into the metal rather than grey text floating on it. */
+
+.pl-hint {
+  margin: 14px 16px;
+  padding: 13px 14px;
+  border: 1px solid #101315;
+  border-left: 2px solid rgba(255, 255, 255, 0.26);
+  border-radius: 2px;
+  background-color: var(--panel-lo);
+  background-image: var(--well);
+  box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.75), inset 0 -1px 0 rgba(255, 255, 255, 0.06);
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text); /* 10.57:1 */
+}
+
+/* --- playlist panel: list header ------------------------------------------ */
+
+.pl-meta {
+  padding: 7px 16px;
+  border-bottom: 1px solid #101315;
+  box-shadow: inset 0 -2px 0 -1px rgba(255, 255, 255, 0.05);
+  font-family: var(--label);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  color: var(--dim); /* 5.26:1 on the plate */
+  text-shadow: 0 1px 0 rgba(0, 0, 0, 0.5);
+}
+
+.pl-meta-key.is-live {
+  color: var(--bright);
+}
+
+/* The list is machined out of the plate, so the well has to run the full height
+   of the panel. In `.pl-body` it is a flex item under the control block and
+   would otherwise stop at the last row, leaving bare plate below it and no
+   recess to speak of. */
+.pl-body .lib-list {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* The total runtime is a number you watch change, so it is a readout. */
+.pl-meta > span:last-child {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+  font-weight: 400;
+  letter-spacing: 0.02em;
+  color: var(--text);
+}
+
+/* --- rows: the row is now a container, not the control -------------------- */
+
+/* `.row` used to be the button and carried the padding. It is now a shell with
+   `.row-main` (and optionally `.row-tools`) inside it, so the earlier
+   `.row { padding: 8px 16px }` was stacking on top of `.row-main`'s own inset
+   and pushing every list 32px off its left edge. The padding belongs to the
+   control. */
+.lib-list .row {
+  padding: 0;
+}
+
+.row-main {
+  padding: 8px 16px;
+}
+
+.row-main:focus-visible {
+  outline: 1px solid #dfe6ec;
+  outline-offset: -3px;
+  box-shadow: inset 0 0 0 4px rgba(0, 0, 0, 0.5);
+}
+
+.row-index {
+  color: #8b949c; /* 5.55:1 on the list well */
+}
+
+.row-stack {
+  gap: 1px;
+}
+
+.row-sub,
+.row-uploader {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: #8b949c; /* 5.55:1 */
+}
+
+.row-time {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+  font-size: 11px;
+  color: var(--dim); /* 6.68:1 */
+}
+
+.row.is-current .row-sub,
+.row.is-current .row-uploader,
+.row.is-current .row-time {
+  color: var(--text);
+}
+
+/* --- rows: the demoted state ---------------------------------------------- */
+/* Measured, not guessed: `.row.is-buried { opacity: .45 }` put the title of a
+   thumbed-down row at 3.19:1 and its index at 2.16:1 against the list well. A
+   buried row is still a row you have to be able to read — it is demoted, not
+   disabled — so the demotion is carried by a deeper ground and one step down
+   the engraved greys instead. Placed above the dead-state block so that a row
+   which is both buried and missing reads as missing. */
+
+.row.is-buried {
+  opacity: 1;
+  background: rgba(0, 0, 0, 0.16);
+}
+
+.row.is-buried .row-title {
+  color: var(--dim);
+}
+
+.row.is-buried .row-index,
+.row.is-buried .row-sub,
+.row.is-buried .row-uploader,
+.row.is-buried .row-time,
+.row.is-buried .row-bpm,
+.row.is-buried .row-key,
+.row.is-buried .row-mark {
+  color: #808991;
+}
+
+/* --- rows: the dead state ------------------------------------------------- */
+/* An item whose file has gone is a blanked-off slot: the well behind it is cut
+   deeper and the light does not reach it. styles.css expressed this as
+   `opacity: .5` on the button, which took the reason down with it — the whole
+   point of the state is that you can read WHY the row is dead. */
+
+.row.is-missing {
+  background: rgba(0, 0, 0, 0.3);
+}
+
+.row.is-missing .row-main:disabled {
+  opacity: 1;
+}
+
+.row.is-missing .row-title {
+  color: var(--dim); /* 7.21:1 on the deepened well */
+  text-decoration-color: rgba(255, 255, 255, 0.34);
+  text-decoration-thickness: 1px;
+}
+
+.row.is-missing .row-index,
+.row.is-missing .row-time {
+  color: #79828a;
+}
+
+/* Engraved, like every other fault legend on the panel.
+
+   It has to have its own line. The legend is appended to the end of the
+   channel name inside a single nowrap/ellipsis sub-line, so on any row with a
+   channel of normal length it was being truncated to "Cold Storage Archive ·
+   FIL…" — the one string on the row that has to survive. Letting the sub-line
+   wrap and blocking the legend puts it underneath, where its leading middot
+   reads as a status bullet, and a dead row standing one line taller than its
+   neighbours is a second cue rather than a cost. */
+.row.is-missing .row-sub {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+}
+
+.row-warn {
+  display: block;
+  margin-top: 2px;
+  font-family: var(--label);
+  font-weight: 600;
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #b9c1c8; /* 10.13:1 */
+}
+
+/* --- rows: per-row tools -------------------------------------------------- */
+/* Forty raised keys down a list would be noise, so a tool is engraved into the
+   row and only grows a key face under the pointer. */
+
+.row-tools {
+  gap: 2px;
+  padding-right: 10px;
+}
+
+.icon {
+  width: 22px;
+  height: 22px;
+  border: 1px solid transparent;
+  border-radius: 2px;
+  font-size: 13px;
+  color: #8b949c; /* 5.55:1 */
+  transition: background 100ms ease, color 100ms ease, box-shadow 100ms ease;
+}
+
+.icon:hover:not(:disabled) {
+  border-color: #101315;
+  background: var(--plate-key-hi);
+  color: var(--bright);
+  box-shadow: var(--edge-up), 0 1px 1px rgba(0, 0, 0, 0.4);
+}
+
+.icon:active:not(:disabled) {
+  background: var(--plate-key-down);
+  box-shadow: var(--edge-in);
+}
+
+/* A key that does nothing is unlit, not translucent. */
+.icon:disabled {
+  opacity: 1;
+  color: #545c63;
+}
+
+.icon:focus-visible {
+  outline-offset: 1px;
+  box-shadow: 0 0 0 4px rgba(0, 0, 0, 0.55);
+}
+
+/* --- import drawer: the paste form ---------------------------------------- */
+
+/* The generator's `.gp-dot.is-online` is one of the three red lamps, and it
+   means "a run is live right now". The import drawer reuses the same class to
+   report that yt-dlp is installed — a static capability, not an event — which
+   would light a permanent fourth lamp reading READY. It gets a seated metal
+   plug instead, and the red stays on the one thing that is actually moving:
+   a download in transfer. */
+section[aria-label="Add from YouTube"] .gp-dot.is-online {
+  background: linear-gradient(180deg, #e8edf1 0%, #b6bec5 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.5),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.5),
+    0 1px 2px rgba(0, 0, 0, 0.45);
+}
+
+/* A picker with nothing to pick is unlit, like every other dead key. */
+.select:disabled {
+  opacity: 1;
+  background: linear-gradient(180deg, #2e3338 0%, #282c31 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035);
+  color: #838c93;
+}
+
+.gp-check {
+  gap: 9px;
+  margin-top: 12px;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--text); /* 8.32:1 */
+}
+
+/* A latching switch: a socket milled into the plate, and a bright metal cap
+   that seats into it when engaged. Brightness and bevel, same as every other
+   on/off in the app. */
+.gp-check input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+  margin: 3px 0 0;
+  border: 1px solid #101315;
+  border-radius: 2px;
+  background-color: var(--panel-lo);
+  background-image: var(--well-deep);
+  box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.85), inset 0 -1px 0 rgba(255, 255, 255, 0.07);
+}
+
+.gp-check input[type="checkbox"]:checked {
+  border-color: #0d0f11;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 14'%3E%3Cpath d='M3.1 7.3 5.7 9.9 10.9 4.2' fill='none' stroke='%2316191c' stroke-width='2.1' stroke-linecap='square'/%3E%3C/svg%3E"),
+    linear-gradient(180deg, #e8edf1 0%, #c3cad0 52%, #aeb6bc 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.5),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.5),
+    0 1px 2px rgba(0, 0, 0, 0.45);
+}
+
+.gp-check input[type="checkbox"]:disabled {
+  opacity: 1;
+  background-image: none;
+  box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.5);
+}
+
+.gp-check code {
+  padding: 1px 5px;
+  border: 1px solid #101315;
+  border-radius: 2px;
+  background: #15181b;
+  box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.7), inset 0 -1px 0 rgba(255, 255, 255, 0.05);
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--bright);
+}
+
+/* --- import drawer: what was rejected ------------------------------------- */
+
+.dl-report {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid #101315;
+  border-left: 2px solid rgba(255, 255, 255, 0.26);
+  border-radius: 2px;
+  background-color: #121518;
+  background-image: var(--well-deep);
+  box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.8), inset 0 -1px 0 rgba(255, 255, 255, 0.06);
+}
+
+.dl-report .gp-note {
+  margin: 0;
+  color: var(--text); /* 11.31:1 */
+}
+
+.dl-report-line {
+  gap: 1px;
+  margin-top: 8px;
+  font-size: 11px;
+}
+
+/* Wraps rather than truncating: a URL you have to fix is a URL you have to
+   read in full, and `overflow-wrap: anywhere` keeps it inside the drawer. */
+.dl-report-input {
+  font-family: var(--mono);
+  color: var(--text);
+}
+
+/* The reason is a fault legend, so it is engraved. */
+.dl-report-reason {
+  font-family: var(--label);
+  font-weight: 600;
+  font-size: 10px;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+  color: var(--dim); /* 7.16:1 */
+}
+
+/* --- import drawer: the queue --------------------------------------------- */
+/* Each job is a small milled card standing proud of the drawer face, with its
+   progress trough machined into it — two levels of depth, so the queue reads
+   as a stack of channel strips rather than a list of dark rectangles. */
+
+.dl-list {
+  gap: 8px;
+}
+
+.dl-job {
+  padding: 10px 11px;
+  border: 1px solid #14181b;
+  border-left: 2px solid #14181b;
+  border-radius: 2px;
+  background-color: #33383e;
+  background-image: var(--grain), var(--lip-s), var(--foot-s);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.1),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.5),
+    0 1px 2px rgba(0, 0, 0, 0.4);
+}
+
+/* The lamp. Exactly one use, and it means bytes are moving right now. */
+.dl-job.is-running {
+  border-left-color: var(--lamp);
+  background-color: #383e44;
+}
+
+.dl-job.is-done {
+  border-left-color: rgba(255, 255, 255, 0.3);
+}
+
+/* Spent, not faded: `opacity: .6` was applied to the card that carries the
+   yt-dlp failure message, which is the one line in the queue you actually need
+   to read. The card loses its top lip instead — an unlit module. */
+.dl-job.is-failed,
+.dl-job.is-cancelled,
+.dl-job.is-skipped {
+  opacity: 1;
+  border-left-color: #14181b;
+  background-color: #262a2e;
+  background-image: var(--grain), var(--foot-s);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.045), inset 0 -1px 0 rgba(0, 0, 0, 0.4);
+}
+
+.dl-job-head {
+  margin-bottom: 8px;
+}
+
+/* The cancel key sits on a raised card rather than in the list well, and the
+   well's #8b949c measures 3.75:1 there. Same trap as the tab keys. */
+.dl-job .icon {
+  color: #adb5bc; /* 5.52:1 */
+}
+
+.dl-job-title {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--bright); /* 10.03:1 */
+}
+
+.dl-job-phase {
+  font-family: var(--label);
+  font-weight: 600;
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  color: #adb5bc; /* 5.69:1 */
+  text-shadow: 0 1px 0 rgba(0, 0, 0, 0.5);
+}
+
+.dl-job-detail {
+  margin-top: 8px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: #adb5bc; /* 5.69:1 on the card, 5.21:1 once it brightens for a run */
+}
+
+/* The reason a job failed is the brightest thing left on a spent card. */
+.dl-job.is-failed .dl-job-detail,
+.dl-job.is-skipped .dl-job-detail {
+  color: var(--text); /* 8.93:1 */
+}
+
+.dl-job-pct {
+  min-width: 34px;
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+  color: var(--bright);
+}
+
+/* --- import drawer: the progress trough ----------------------------------- */
+/* Deeper and taller than the generator's, because in this drawer it is the
+   main event rather than a footnote. */
+
+.dl-job .gp-bar {
+  height: 7px;
+  border: 1px solid #0a0c0d;
+  border-radius: 4px;
+  background: linear-gradient(180deg, #08090a 0%, #16191c 100%);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.9), inset 0 -1px 0 rgba(255, 255, 255, 0.07);
+}
+
+/* Bright enough to be seen as metal filling the trough. The first pass used the
+   generator's darker idle fill and a finished download read as an empty bar —
+   at 4px of visible fill, #7d868d..#4b5359 lands within a few points of the
+   trough itself. */
+.dl-job .gp-bar-fill {
+  border-radius: 3px 2px 2px 3px;
+  background-image: linear-gradient(180deg, #9aa2a8 0%, #767e85 52%, #626a70 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.24), inset 0 -1px 0 rgba(0, 0, 0, 0.45);
+}
+
+/* Fine knurling on the live fill, so a bar that is filling reads as milled
+   metal being drawn across the trough rather than as a coloured rectangle. */
+.dl-job .gp-bar-fill.is-live {
+  background-image:
+    repeating-linear-gradient(
+      90deg,
+      rgba(255, 255, 255, 0.09) 0px,
+      rgba(255, 255, 255, 0.09) 1px,
+      rgba(0, 0, 0, 0.055) 1px,
+      rgba(0, 0, 0, 0.055) 4px
+    ),
+    linear-gradient(180deg, #eef2f5 0%, #c6cdd3 52%, #a9b0b6 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.5), inset 0 -1px 0 rgba(0, 0, 0, 0.45);
+}
+
+/* --- responsive ----------------------------------------------------------- */
+
+@media (max-width: 940px) {
+  /* Below 940 the stage stacks and the side panel becomes a 240px strip. The
+     control block was taking all of it — at 900px not one track row survived.
+     The panel is *full width* here, so the four keys fit comfortably on one
+     line (styles.css drops them to two columns, which is the wrong way round
+     for this breakpoint), and every control gives back a few pixels of height.
+     That is the difference between no list and a scrolling one. */
+  .pl-controls {
+    gap: 6px;
+    padding: 9px 16px;
+  }
+
+  .pl-actions {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .pl-controls .select,
+  .pl-controls .btn.is-block {
+    height: 30px;
+  }
+
+  .pl-name > .btn {
+    height: 28px;
+  }
+
+  .pl-hint {
+    margin: 10px 16px;
+    padding: 11px 12px;
+  }
+}
+
+/* --- motion --------------------------------------------------------------- */
+
+@media (prefers-reduced-motion: reduce) {
+  .tab,
+  .icon {
+    transition: none;
+  }
+}

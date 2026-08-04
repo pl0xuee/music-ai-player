@@ -486,10 +486,16 @@ fn parse_percent(line: &str) -> Option<f64> {
 }
 
 /// `[download] jNQXAC9IVRw: has already been recorded in the archive`
+///
+/// Current yt-dlp puts the title between the ID and the phrase:
+/// `[download] jNQXAC9IVRw: Me at the zoo has already been recorded in the archive`
+/// so the phrase is matched at the end of the line rather than the start of the
+/// tail — otherwise every playlist entry already held is counted as neither
+/// added nor skipped, and the panel reports nothing about it.
 fn parse_archived(line: &str) -> Option<String> {
     let rest = line.trim().strip_prefix("[download]")?.trim();
     let (id, tail) = rest.split_once(": ")?;
-    tail.starts_with("has already been recorded")
+    tail.ends_with("has already been recorded in the archive")
         .then(|| id.to_string())
 }
 
@@ -722,6 +728,13 @@ impl Downloads {
     pub fn cancel<R: Runtime>(&self, app: &AppHandle<R>, job_id: u64) {
         {
             let mut guard = self.lock();
+            // An id that was never issued must not be recorded: `cancelled` is
+            // only pruned against live jobs, so the entry would survive and
+            // cancel a later job that happens to be given the same number
+            // before it ever starts.
+            if !guard.jobs.iter().any(|j| j.id == job_id) {
+                return;
+            }
             guard.cancelled.insert(job_id);
             guard.pending.retain(|id| *id != job_id);
             if let Some(job) = guard.jobs.iter_mut().find(|j| j.id == job_id) {
@@ -1394,6 +1407,14 @@ total nonsense on this line
 
         assert_eq!(
             parse_archived("[download] jNQXAC9IVRw: has already been recorded in the archive"),
+            Some("jNQXAC9IVRw".into())
+        );
+        // What yt-dlp actually prints today: the title sits between the ID and
+        // the phrase. Verified against yt-dlp 2026.07.04.
+        assert_eq!(
+            parse_archived(
+                "[download] jNQXAC9IVRw: Me at the zoo has already been recorded in the archive"
+            ),
             Some("jNQXAC9IVRw".into())
         );
         assert_eq!(parse_archived("[download] Destination: foo.mp3"), None);

@@ -13,6 +13,10 @@ const CURVE_STEPS = 256;
  */
 const TICK_MS = 100;
 
+/** Shown when the browser cannot open an audio output device at all. */
+const AUDIO_UNAVAILABLE =
+  "No audio output is available — the system has no usable audio device.";
+
 export type DeckId = "A" | "B";
 
 export interface PlayerProgress {
@@ -171,9 +175,25 @@ export class Player {
    * Nudge the context awake without awaiting it. A context blocked by the
    * autoplay policy returns a promise that stays pending until the user
    * interacts, so awaiting it here would deadlock playback rather than delay it.
+   *
+   * It can also *reject* — a machine with no usable audio output answers
+   * `InvalidStateError: Failed to start the audio device` — and that has to be
+   * reported rather than left as an unhandled rejection the user never sees.
    */
   private unlock(): void {
-    if (this.ctx.state === "suspended") void this.ctx.resume();
+    if (this.ctx.state !== "suspended") return;
+    void this.ctx.resume().catch((err: unknown) => {
+      this.emit("error", { message: `${AUDIO_UNAVAILABLE} (${describe(err)})` });
+    });
+  }
+
+  /**
+   * True once the output device has failed for good. The browser closes the
+   * context when it cannot open a device, and a closed context never reopens,
+   * so every later attempt has to say so instead of arming a silent deck.
+   */
+  private get audioUnavailable(): boolean {
+    return this.ctx.state === "closed";
   }
 
   setNextSelector(selector: NextSelector): void {
@@ -184,6 +204,10 @@ export class Player {
 
   /** Load `track` onto the active deck and start it, abandoning any fade. */
   async play(track: Track): Promise<void> {
+    if (this.audioUnavailable) {
+      this.emit("error", { message: AUDIO_UNAVAILABLE });
+      return;
+    }
     this.unlock();
     this.cancelFade();
     this.preloadToken += 1;
@@ -220,6 +244,10 @@ export class Player {
   async resume(): Promise<void> {
     const deck = this.decks[this.active];
     if (deck.track === null) return;
+    if (this.audioUnavailable) {
+      this.emit("error", { message: AUDIO_UNAVAILABLE });
+      return;
+    }
     this.unlock();
     try {
       await deck.el.play();

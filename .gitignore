@@ -1,5 +1,5 @@
 # Generated audio + library database — this is the big one.
-# A full 24 h library is ~1.4 GB of opus and must never be committed.
+# A full 24 h library is ~1.4 GB of mp3 and must never be committed.
 /library/*
 !/library/.gitkeep
 
