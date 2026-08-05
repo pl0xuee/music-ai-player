@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { PanelView } from "./PanelTabs";
 import { PanelTabs } from "./PanelTabs";
+import { Picker } from "./Picker";
 import type { Playlist, Track } from "../types";
 import { SOURCE_LABEL, isGenerated, meaningfulGenre } from "../types";
 import { clock, key } from "../format";
@@ -82,19 +83,16 @@ export function LibraryPanel(props: Props) {
         <PanelTabs view={view} onView={onView} playlistCount={playlistCount} />
         <div className="lib-tools">
           {genreOptions.length > 0 && (
-            <select
-              className="select is-quiet"
+            <Picker
+              className="is-quiet"
+              label="Filter by genre"
               value={genre}
-              onChange={(event) => onGenre(event.target.value)}
-              aria-label="Filter by genre"
-            >
-              <option value="all">All genres</option>
-              {genreOptions.map((option) => (
-                <option key={option} value={option}>
-                  {option}
-                </option>
-              ))}
-            </select>
+              onChange={onGenre}
+              options={[
+                { value: "all", label: "All genres" },
+                ...genreOptions.map((option) => ({ value: option, label: option })),
+              ]}
+            />
           )}
           <span className="lib-count">{tracks.length} ready</span>
           <button

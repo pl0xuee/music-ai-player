@@ -2,6 +2,7 @@ import { useState } from "react";
 
 import type { PanelView } from "./PanelTabs";
 import { PanelTabs } from "./PanelTabs";
+import { Picker } from "./Picker";
 import type { CurationExport, Playlist, PlaylistItem } from "../types";
 import { clock, span } from "../format";
 
@@ -105,21 +106,22 @@ export function PlaylistPanel(props: Props) {
 
       <div className="pl-body">
         <div className="pl-controls">
-          <select
-            className="select is-wide"
-            value={selectedId ?? ""}
-            onChange={(event) =>
-              onSelect(event.target.value === "" ? null : Number(event.target.value))
-            }
-            aria-label="Select a playlist"
-          >
-            <option value="">— no playlist —</option>
-            {playlists.map((playlist) => (
-              <option key={playlist.id} value={playlist.id}>
-                {playlist.name} ({playlist.itemCount})
-              </option>
-            ))}
-          </select>
+          <Picker
+            className="is-wide"
+            label="Select a playlist"
+            value={selectedId === null ? "" : String(selectedId)}
+            onChange={(next) => onSelect(next === "" ? null : Number(next))}
+            options={[
+              { value: "", label: "— no playlist —" },
+              ...playlists.map((playlist) => ({
+                value: String(playlist.id),
+                label: playlist.name,
+                // The count sets itself apart from the name rather than being
+                // bracketed onto the end of it.
+                hint: String(playlist.itemCount),
+              })),
+            ]}
+          />
 
           <div className="pl-actions">
             <button

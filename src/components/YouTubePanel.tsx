@@ -13,6 +13,7 @@ import {
 } from "../api";
 import type { DownloadJob, ImportReport, Playlist, YtTools } from "../types";
 import { EMPTY_TOOLS, isSettled } from "../types";
+import { Picker } from "./Picker";
 
 /** Where the chosen download folder is remembered. */
 const DESTINATION_KEY = "music-ai-player.youtube.destination";
@@ -232,22 +233,21 @@ export function YouTubePanel(props: Props) {
             />
 
             <div className="gp-row">
-              <select
-                className="select is-wide"
-                value={targetId ?? ""}
+              <Picker
+                className="is-wide"
+                label="Add to playlist"
+                value={targetId === null ? "" : String(targetId)}
                 disabled={blocked}
-                onChange={(event) =>
-                  onTarget(event.target.value === "" ? null : Number(event.target.value))
-                }
-                aria-label="Add to playlist"
-              >
-                <option value="">Library only</option>
-                {playlists.map((playlist) => (
-                  <option key={playlist.id} value={playlist.id}>
-                    Add to “{playlist.name}”
-                  </option>
-                ))}
-              </select>
+                onChange={(next) => onTarget(next === "" ? null : Number(next))}
+                options={[
+                  { value: "", label: "Library only" },
+                  ...playlists.map((playlist) => ({
+                    value: String(playlist.id),
+                    label: `Add to “${playlist.name}”`,
+                    hint: String(playlist.itemCount),
+                  })),
+                ]}
+              />
             </div>
 
             <label className="gp-check">

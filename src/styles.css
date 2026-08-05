@@ -1133,6 +1133,148 @@ body::after {
   border-color: var(--live);
 }
 
+/* ---------------------------------------------------------------------------
+   Picker — a drop-down whose open list belongs to this window.
+   --------------------------------------------------------------------------- */
+
+.picker {
+  position: relative;
+  display: inline-flex;
+}
+
+.picker-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 10px;
+  border: 1px solid var(--edge);
+  border-radius: 7px;
+  background: linear-gradient(180deg, #161b24, #1b212b);
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.45);
+  color: var(--paper);
+  font-family: var(--ui);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.picker-btn:hover:not(:disabled) {
+  border-color: var(--edge-strong, var(--edge));
+}
+
+.picker-btn:focus-visible,
+.picker-btn[aria-expanded="true"] {
+  outline: none;
+  border-color: var(--live);
+}
+
+.picker-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.picker-btn.is-wide {
+  min-width: 220px;
+}
+
+.picker-btn.is-quiet {
+  background: transparent;
+  box-shadow: none;
+  color: var(--mute);
+}
+
+.picker-value {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.picker-caret {
+  flex: none;
+  width: 13px;
+  height: 13px;
+  stroke: var(--faint);
+  stroke-width: 2;
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.picker-list {
+  position: absolute;
+  top: calc(100% + 5px);
+  left: 0;
+  min-width: 100%;
+  max-width: 340px;
+  z-index: 60;
+  padding: 5px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  max-height: 340px;
+  overflow-y: auto;
+  background: var(--raise);
+  border: 1px solid var(--edge);
+  border-radius: 9px;
+  box-shadow: var(--drop);
+}
+
+.picker-opt {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 9px;
+  border-radius: 6px;
+  color: var(--text);
+  font-family: var(--ui);
+  font-size: 12.5px;
+  cursor: pointer;
+  /* The rail the current value is marked with, transparent until it earns it,
+     so every row keeps the same text position whether marked or not. */
+  border-left: 2px solid transparent;
+}
+
+.picker-opt-label {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.picker-hint {
+  flex: none;
+  font-family: var(--data);
+  font-size: 11px;
+  color: var(--faint);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Hover and keyboard focus are the same state deliberately: with both a pointer
+   and arrow keys able to move through the list, two different highlights would
+   leave the user guessing which one Enter acts on. */
+.picker-opt.is-active {
+  background: var(--slab);
+  color: var(--paper);
+}
+
+/* The current value wears the deck colour the rest of the window is wearing,
+   which is what makes this list part of the app rather than a panel from the
+   toolkit. */
+.picker-opt.is-selected {
+  border-left-color: var(--live);
+  color: var(--live);
+}
+
+.picker-opt.is-selected.is-active {
+  background: rgba(var(--live-rgb), 0.13);
+}
+
+.picker-opt.is-selected .picker-hint {
+  color: rgba(var(--live-rgb), 0.75);
+}
+
 /* Native select chrome is the one thing in here that would announce which
    toolkit drew the window, so it is replaced with a drawn caret. */
 .select {
