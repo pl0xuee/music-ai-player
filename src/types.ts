@@ -309,3 +309,27 @@ export const IDLE_RUN: GenerationProgress = {
   message: null,
   exitCode: null,
 };
+
+/** Where `curation_export` put the files it wrote. */
+export interface CurationExport {
+  dir: string;
+  libraryFile: string;
+  promptFile: string;
+  planFile: string;
+  tracks: number;
+}
+
+/**
+ * What applying a plan did.
+ *
+ * Every field is reported rather than assumed: a plan is written elsewhere, by
+ * something this app cannot check, so "it worked" is not a useful answer.
+ */
+export interface CurationReport {
+  created: string[];
+  appended: string[];
+  added: number;
+  alreadyIn: number;
+  unknownIds: number;
+  errors: string[];
+}

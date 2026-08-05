@@ -136,6 +136,8 @@ fn main() {
             library::add_to_playlist,
             library::remove_item,
             library::reorder_item,
+            library::curation_export,
+            library::curation_apply,
             youtube::youtube_status,
             youtube::youtube_jobs,
             youtube::youtube_import,

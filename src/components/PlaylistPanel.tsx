@@ -2,7 +2,7 @@ import { useState } from "react";
 
 import type { PanelView } from "./PanelTabs";
 import { PanelTabs } from "./PanelTabs";
-import type { Playlist, PlaylistItem } from "../types";
+import type { CurationExport, Playlist, PlaylistItem } from "../types";
 import { clock, span } from "../format";
 
 interface Props {
@@ -26,6 +26,11 @@ interface Props {
   onAddUrls: () => void;
   onRefresh: () => void;
   refreshing: boolean;
+  /** The last export, so the panel can show where the files actually went. */
+  curation: CurationExport | null;
+  curating: boolean;
+  onCurateExport: () => void;
+  onCurateApply: () => void;
 }
 
 export function PlaylistPanel(props: Props) {
@@ -49,12 +54,17 @@ export function PlaylistPanel(props: Props) {
     onAddUrls,
     onRefresh,
     refreshing,
+    curation,
+    curating,
+    onCurateExport,
+    onCurateApply,
   } = props;
 
   // `null` means the name editor is closed; "" is a legitimate in-progress
   // value while the user is still typing, so the two cannot be conflated.
   const [draft, setDraft] = useState<string | null>(null);
   const [renaming, setRenaming] = useState(false);
+  const [showCurate, setShowCurate] = useState(false);
 
   const selected = playlists.find((p) => p.id === selectedId) ?? null;
 
@@ -191,6 +201,65 @@ export function PlaylistPanel(props: Props) {
           >
             Paste YouTube URLs
           </button>
+
+          {/* Sorting a library into playlists is a judgement about music, which
+              is the one part of this the app has no business guessing at — and
+              exactly what a language model is good at. So the app asks the
+              question in a file and takes the answer back in another, without
+              ever talking to a model itself. */}
+          <button
+            type="button"
+            className="btn is-block"
+            onClick={() => setShowCurate(!showCurate)}
+            aria-expanded={showCurate}
+            title="Have an AI sort the library into playlists"
+          >
+            {showCurate ? "Hide AI curation" : "Curate with AI…"}
+          </button>
+
+          {showCurate && (
+            <div className="curate">
+              <p className="curate-note">
+                Nothing here talks to a model. The library is written to a file and a plan is read
+                back from one, so this works with whatever assistant you already have — or none.
+              </p>
+
+              <div className="curate-step">
+                <button
+                  type="button"
+                  className="btn is-tight"
+                  onClick={onCurateExport}
+                  disabled={curating}
+                >
+                  {curation === null ? "1 · Export library" : "1 · Export again"}
+                </button>
+                {curation !== null && (
+                  <>
+                    <p className="curate-note">
+                      {curation.tracks} tracks written. Point your AI at this folder and tell it to
+                      follow <code>PROMPT.md</code>:
+                    </p>
+                    <code className="curate-path">{curation.dir}</code>
+                  </>
+                )}
+              </div>
+
+              <div className="curate-step">
+                <button
+                  type="button"
+                  className="btn is-tight"
+                  onClick={onCurateApply}
+                  disabled={curating}
+                >
+                  2 · Apply plan
+                </button>
+                <p className="curate-note">
+                  Reads <code>plan.json</code> from that folder. It only ever adds — no playlist is
+                  emptied or deleted, so running a plan twice is safe.
+                </p>
+              </div>
+            </div>
+          )}
         </div>
 
         {selected === null ? (

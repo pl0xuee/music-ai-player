@@ -1,4 +1,12 @@
-import type { DownloadJob, GenStyle, Playlist, Stats, Track } from "./types";
+import type {
+  CurationExport,
+  CurationReport,
+  DownloadJob,
+  GenStyle,
+  Playlist,
+  Stats,
+  Track,
+} from "./types";
 
 /**
  * Which surface to open on load, from the URL hash — `#generate`, `#import`,
@@ -216,4 +224,31 @@ export function devPlaylists(): Playlist[] {
       seconds: 41_000,
     },
   ];
+}
+
+/** An export result, so the curation panel can be reviewed with real paths in it. */
+export function devCurationExport(): CurationExport {
+  const dir = "/home/you/.local/share/music-ai-player/library/curation";
+  return {
+    dir,
+    libraryFile: `${dir}/library.json`,
+    promptFile: `${dir}/PROMPT.md`,
+    planFile: `${dir}/plan.json`,
+    tracks: 67,
+  };
+}
+
+/**
+ * A report with something in every field — created *and* appended, skipped ids
+ * and an error. The all-clear case is the one that needs the least checking.
+ */
+export function devCurationReport(): CurationReport {
+  return {
+    created: ["Viking & Norse Folk", "Hardstyle — Oldschool"],
+    appended: ["Dark Techno & EBM"],
+    added: 21,
+    alreadyIn: 3,
+    unknownIds: 2,
+    errors: ['"" is not a name'],
+  };
 }

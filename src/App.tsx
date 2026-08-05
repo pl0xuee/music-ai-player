@@ -20,6 +20,8 @@ import {
   EVENTS,
   IN_TAURI,
   addToPlaylist,
+  curationApply,
+  curationExport,
   clearPlaylist,
   createPlaylist,
   deletePlaylist,
@@ -42,7 +44,15 @@ import {
   trackSourceUrl,
 } from "./api";
 import { EMPTY_STATS, IDLE_RUN } from "./types";
-import type { GenerationProgress, Playlist, PlaylistItem, Stats, Track } from "./types";
+import type {
+  CurationExport,
+  CurationReport,
+  GenerationProgress,
+  Playlist,
+  PlaylistItem,
+  Stats,
+  Track,
+} from "./types";
 import { deckColour, liveColour } from "./deck-colour";
 import { devPanel } from "./dev-fixtures";
 
@@ -92,6 +102,8 @@ export default function App() {
   const [scanning, setScanning] = useState(false);
   /** True while the library is being re-read and checked for missing files. */
   const [refreshing, setRefreshing] = useState(false);
+  const [curation, setCuration] = useState<CurationExport | null>(null);
+  const [curating, setCurating] = useState(false);
   /** True while files are being held over the window. */
   const [dropping, setDropping] = useState(false);
   const [run, setRun] = useState<GenerationProgress>(IDLE_RUN);
@@ -716,6 +728,27 @@ export default function App() {
               onAddUrls={() => setImportOpen(true)}
               onRefresh={handleRefresh}
               refreshing={refreshing}
+              curation={curation}
+              curating={curating}
+              onCurateExport={() => {
+                setCurating(true);
+                mutate(
+                  curationExport()
+                    .then((result) => {
+                      setCuration(result);
+                      setNotice(`Wrote ${result.tracks} tracks to ${result.dir}`);
+                    })
+                    .finally(() => setCurating(false)),
+                );
+              }}
+              onCurateApply={() => {
+                setCurating(true);
+                mutate(
+                  curationApply(null)
+                    .then((report) => setNotice(describeCuration(report)))
+                    .finally(() => setCurating(false)),
+                );
+              }}
             />
           )}
         </main>
@@ -876,4 +909,22 @@ function nextInPlaylist(
 
 function describe(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * One line describing what applying a plan actually did.
+ *
+ * A plan is written somewhere else by something this app cannot check, so the
+ * counts are reported rather than reduced to "done" — a plan that half-applied
+ * because half its ids were stale should not read the same as one that worked.
+ */
+function describeCuration(report: CurationReport): string {
+  const parts: string[] = [];
+  if (report.created.length > 0) parts.push(`created ${report.created.length}`);
+  if (report.appended.length > 0) parts.push(`added to ${report.appended.length}`);
+  parts.push(`${report.added} tracks placed`);
+  if (report.alreadyIn > 0) parts.push(`${report.alreadyIn} already there`);
+  if (report.unknownIds > 0) parts.push(`${report.unknownIds} unknown ids skipped`);
+  if (report.errors.length > 0) parts.push(`${report.errors.length} refused`);
+  return parts.join(" · ");
 }

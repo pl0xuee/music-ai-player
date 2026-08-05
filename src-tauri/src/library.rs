@@ -1169,6 +1169,270 @@ pub fn reorder_item(lib: State<'_, Library>, item_id: i64, new_position: i64) ->
 }
 
 // ---------------------------------------------------------------------------
+// Curation handoff
+// ---------------------------------------------------------------------------
+//
+// Sorting a library into playlists is a judgement about music, which is the one
+// part of this the app has no business guessing at. It is also exactly what a
+// language model is good at — so the app hands the question over and takes the
+// answer back, without ever talking to a model itself.
+//
+// Two files out, one file in. No API key, no network, no vendor: it works with
+// whatever the user already has, a local model, or a person with a text editor.
+// The app's only job is to describe the library honestly and to apply a plan
+// carefully.
+
+const CURATION_DIRNAME: &str = "curation";
+const CURATION_LIBRARY: &str = "library.json";
+const CURATION_PROMPT: &str = "PROMPT.md";
+const CURATION_PLAN: &str = "plan.json";
+
+/// Where the export landed, so the UI can show real paths rather than describe
+/// them.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CurationExport {
+    pub dir: String,
+    pub library_file: String,
+    pub prompt_file: String,
+    pub plan_file: String,
+    pub tracks: usize,
+}
+
+/// What applying a plan actually did. Every number here exists because the
+/// alternative is a plan that half-worked and said nothing.
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CurationReport {
+    pub created: Vec<String>,
+    pub appended: Vec<String>,
+    pub added: usize,
+    pub already_in: usize,
+    pub unknown_ids: usize,
+    pub errors: Vec<String>,
+}
+
+/// A track as the plan-writer sees it: enough to judge what it is, and nothing
+/// about where it lives on disk.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CurationTrack {
+    id: i64,
+    title: String,
+    artist: Option<String>,
+    genre: Option<String>,
+    bpm: Option<i64>,
+    key: Option<String>,
+    seconds: Option<f64>,
+    source: String,
+}
+
+/// One entry of the plan file. `trackIds` is camelCase because that is what the
+/// prompt asks for and what every example in it shows.
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PlannedPlaylist {
+    name: String,
+    track_ids: Vec<i64>,
+}
+
+fn curation_dir(lib: &Library) -> PathBuf {
+    match lib.media_root() {
+        Some(root) => root.join(CURATION_DIRNAME),
+        None => PathBuf::from(CURATION_DIRNAME),
+    }
+}
+
+/// The instructions, written beside the data so the whole job is "read this
+/// folder and follow it" rather than a prompt the user has to keep somewhere.
+fn curation_prompt(library_file: &str, plan_file: &str, tracks: usize) -> String {
+    format!(
+        "# Curate this music library into playlists\n\
+         \n\
+         There are {tracks} tracks in `{library_file}`, each with an `id`, a\n\
+         `title`, and whatever else is known — `artist`, `genre`, `bpm`, `key`,\n\
+         `seconds`, `source`. Most of them are long DJ mixes, so the title is\n\
+         usually the only honest description of what a track *is*.\n\
+         \n\
+         Group them into playlists and write `{plan_file}` next to this file:\n\
+         \n\
+         ```json\n\
+         [\n\
+         \x20 {{ \"name\": \"Viking & Norse Folk\", \"trackIds\": [16, 33, 40] }},\n\
+         \x20 {{ \"name\": \"Hardstyle — Oldschool\", \"trackIds\": [26, 52] }}\n\
+         ]\n\
+         ```\n\
+         \n\
+         Guidance, from having done this once by hand:\n\
+         \n\
+         - **Read the titles, do not keyword-match them.** A mix called\n\
+         \x20 `VALHALLA VOL.4 — HARD TECHNO` is techno, not Norse music.\n\
+         - **Split a group that grows past ~12 tracks** if the titles suggest an\n\
+         \x20 honest split, and name the parts after what they say themselves.\n\
+         - **Leave a track out rather than inventing a home for it.** Two\n\
+         \x20 leftovers do not justify a junk-drawer playlist.\n\
+         - A track may appear in more than one playlist.\n\
+         - Names are yours to choose; up to 120 characters.\n\
+         \n\
+         Applying the plan only ever *adds*. An unknown id is skipped, a name\n\
+         that already exists is added to rather than duplicated, and nothing is\n\
+         deleted — so a plan is safe to run twice.\n"
+    )
+}
+
+/// Write the library and the instructions for whatever is going to read them.
+#[tauri::command(async)]
+pub fn curation_export(lib: State<'_, Library>) -> Result<CurationExport, String> {
+    let conn = lib.connect()?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, title, genre, bpm, key_scale, duration, source, uploader \
+             FROM tracks WHERE status = 'ready' ORDER BY id",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| {
+            let genre: String = row.get(2)?;
+            let key: String = row.get(4)?;
+            let bpm: i64 = row.get(3)?;
+            Ok(CurationTrack {
+                id: row.get(0)?,
+                title: row.get(1)?,
+                artist: row.get::<_, Option<String>>(7)?.filter(|s| !s.is_empty()),
+                // The generator's columns are empty strings on an imported row
+                // rather than nulls; sending "" would read as a real answer.
+                genre: Some(genre).filter(|s| !s.is_empty()),
+                bpm: Some(bpm).filter(|b| *b > 0),
+                key: Some(key).filter(|s| !s.is_empty()),
+                seconds: row.get(5)?,
+                source: row.get(6)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    let tracks: Vec<CurationTrack> = rows.filter_map(Result::ok).collect();
+
+    let dir = curation_dir(&lib);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+    let library_file = dir.join(CURATION_LIBRARY);
+    let prompt_file = dir.join(CURATION_PROMPT);
+    let plan_file = dir.join(CURATION_PLAN);
+
+    let body = serde_json::json!({ "tracks": tracks });
+    std::fs::write(
+        &library_file,
+        serde_json::to_string_pretty(&body).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| format!("cannot write {}: {e}", library_file.display()))?;
+    std::fs::write(
+        &prompt_file,
+        curation_prompt(CURATION_LIBRARY, CURATION_PLAN, tracks.len()),
+    )
+    .map_err(|e| format!("cannot write {}: {e}", prompt_file.display()))?;
+
+    Ok(CurationExport {
+        dir: dir.display().to_string(),
+        library_file: library_file.display().to_string(),
+        prompt_file: prompt_file.display().to_string(),
+        plan_file: plan_file.display().to_string(),
+        tracks: tracks.len(),
+    })
+}
+
+/// Apply a plan file.
+///
+/// Deliberately additive. This runs content someone else's model wrote, against
+/// a library that took hours to build, so the destructive readings of "curate"
+/// are simply not implemented: there is no path through here that removes a
+/// playlist, empties one, or touches a track.
+#[tauri::command(async)]
+pub fn curation_apply(lib: State<'_, Library>, path: Option<String>) -> Result<CurationReport, String> {
+    let plan_path = match path {
+        Some(p) if !p.trim().is_empty() => PathBuf::from(p),
+        _ => curation_dir(&lib).join(CURATION_PLAN),
+    };
+    let raw = std::fs::read_to_string(&plan_path)
+        .map_err(|e| format!("cannot read {}: {e}", plan_path.display()))?;
+    let planned: Vec<PlannedPlaylist> = serde_json::from_str(&raw).map_err(|e| {
+        format!(
+            "{} is not a plan this understands: {e}. It should be a list of \
+             {{\"name\": \"…\", \"trackIds\": [1, 2]}}.",
+            plan_path.display()
+        )
+    })?;
+    if planned.is_empty() {
+        return Err(format!("{} lists no playlists", plan_path.display()));
+    }
+    apply_plan(&lib.connect()?, planned)
+}
+
+/// The half of `curation_apply` that touches the database, split out so the
+/// rules above can be tested without a running app behind them.
+fn apply_plan(conn: &Connection, planned: Vec<PlannedPlaylist>) -> Result<CurationReport, String> {
+    let known: std::collections::HashSet<i64> = conn
+        .prepare("SELECT id FROM tracks")
+        .and_then(|mut s| s.query_map([], |r| r.get(0)).map(|rows| rows.filter_map(Result::ok).collect()))
+        .map_err(|e| e.to_string())?;
+
+    let mut report = CurationReport::default();
+    for entry in planned {
+        let name = match clean_name(&entry.name) {
+            Ok(name) => name,
+            Err(err) => {
+                report.errors.push(err);
+                continue;
+            }
+        };
+        if entry.track_ids.is_empty() {
+            report.errors.push(format!("\"{name}\" lists no tracks"));
+            continue;
+        }
+
+        // An existing name is joined rather than refused: a plan is meant to be
+        // safe to run twice, and the unique index on (playlist, track) already
+        // stops a member being doubled.
+        let existing: Option<i64> = conn
+            .query_row(
+                "SELECT id FROM playlists WHERE name = ?1",
+                rusqlite::params![name],
+                |row| row.get(0),
+            )
+            .ok();
+        let (playlist_id, is_new) = match existing {
+            Some(id) => (id, false),
+            None => match new_playlist(&conn, &name) {
+                Ok(id) => (id, true),
+                Err(err) => {
+                    report.errors.push(err);
+                    continue;
+                }
+            },
+        };
+
+        let mut touched = 0usize;
+        for track_id in entry.track_ids {
+            if !known.contains(&track_id) {
+                report.unknown_ids += 1;
+                continue;
+            }
+            match append_to_playlist(&conn, playlist_id, track_id) {
+                Ok(true) => {
+                    report.added += 1;
+                    touched += 1;
+                }
+                Ok(false) => report.already_in += 1,
+                Err(err) => report.errors.push(err),
+            }
+        }
+        if is_new {
+            report.created.push(name);
+        } else if touched > 0 {
+            report.appended.push(name);
+        }
+    }
+    Ok(report)
+}
+
+// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -1397,6 +1661,92 @@ mod tests {
         conn.execute("DELETE FROM tracks WHERE id = ?1", rusqlite::params![a])
             .expect("delete track");
         assert!(playlist_items(&conn, playlist).expect("items").is_empty());
+    }
+
+    fn plan(name: &str, ids: &[i64]) -> PlannedPlaylist {
+        PlannedPlaylist {
+            name: name.into(),
+            track_ids: ids.to_vec(),
+        }
+    }
+
+    #[test]
+    fn a_plan_creates_playlists_and_fills_them() {
+        let tmp = temp_lib("plan-basic");
+        let conn = tmp.lib.connect().expect("connect");
+        let a = add_track(&conn, "aaaaaaaaaaa", "A");
+        let b = add_track(&conn, "bbbbbbbbbbb", "B");
+
+        let report = apply_plan(&conn, vec![plan("Focus", &[a, b])]).expect("apply");
+        assert_eq!(report.created, vec!["Focus".to_string()]);
+        assert_eq!(report.added, 2);
+        assert!(report.errors.is_empty());
+    }
+
+    /// A plan comes from outside and can name a track that is not here — a
+    /// stale export, or a model that invented one. It must be counted and
+    /// stepped over, never abort the rest of the plan.
+    #[test]
+    fn a_plan_skips_ids_the_library_does_not_have() {
+        let tmp = temp_lib("plan-unknown");
+        let conn = tmp.lib.connect().expect("connect");
+        let a = add_track(&conn, "aaaaaaaaaaa", "A");
+
+        let report = apply_plan(&conn, vec![plan("Focus", &[a, 9_999])]).expect("apply");
+        assert_eq!(report.added, 1);
+        assert_eq!(report.unknown_ids, 1);
+        assert!(report.errors.is_empty());
+    }
+
+    /// Running the same plan twice must be safe: the second pass adds nothing
+    /// and creates nothing, rather than failing on the name or doubling members.
+    #[test]
+    fn a_plan_is_safe_to_run_twice() {
+        let tmp = temp_lib("plan-twice");
+        let conn = tmp.lib.connect().expect("connect");
+        let a = add_track(&conn, "aaaaaaaaaaa", "A");
+
+        apply_plan(&conn, vec![plan("Focus", &[a])]).expect("first");
+        let second = apply_plan(&conn, vec![plan("Focus", &[a])]).expect("second");
+        assert!(second.created.is_empty(), "must not create a second playlist");
+        assert_eq!(second.added, 0);
+        assert_eq!(second.already_in, 1);
+
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM playlists", [], |r| r.get(0))
+            .expect("count");
+        assert_eq!(count, 1);
+    }
+
+    /// An existing playlist is joined, not refused — and the tracks already in
+    /// it are left where they are.
+    #[test]
+    fn a_plan_adds_to_a_playlist_that_already_exists() {
+        let tmp = temp_lib("plan-join");
+        let conn = tmp.lib.connect().expect("connect");
+        let a = add_track(&conn, "aaaaaaaaaaa", "A");
+        let b = add_track(&conn, "bbbbbbbbbbb", "B");
+        let existing = new_playlist(&conn, "Focus").expect("create");
+        append_to_playlist(&conn, existing, a).expect("append");
+
+        let report = apply_plan(&conn, vec![plan("Focus", &[b])]).expect("apply");
+        assert!(report.created.is_empty());
+        assert_eq!(report.appended, vec!["Focus".to_string()]);
+        assert_eq!(playlist_items(&conn, existing).expect("items").len(), 2);
+    }
+
+    /// A named playlist with nothing in it is a mistake in the plan, not an
+    /// instruction to make an empty playlist.
+    #[test]
+    fn a_plan_refuses_an_entry_with_no_tracks_or_no_name() {
+        let tmp = temp_lib("plan-empty");
+        let conn = tmp.lib.connect().expect("connect");
+        let report = apply_plan(&conn, vec![plan("Focus", &[]), plan("   ", &[1])]).expect("apply");
+        assert_eq!(report.errors.len(), 2);
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM playlists", [], |r| r.get(0))
+            .expect("count");
+        assert_eq!(count, 0, "nothing should have been created");
     }
 
     #[test]

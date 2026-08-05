@@ -1112,7 +1112,12 @@ body::after {
   width: 100%;
 }
 
+/* A textarea with no width falls back to its `cols` default — about twenty
+   characters — which is how the link box ended up a narrow slot in a drawer
+   with room to spare, and too small to see whether the URLs pasted into it are
+   the right ones. */
 .input.is-area {
+  width: 100%;
   min-height: 92px;
   line-height: 1.5;
   resize: vertical;
@@ -1400,7 +1405,18 @@ input[type="radio"] {
 .gp-body {
   display: grid;
   gap: 0;
-  max-width: 760px;
+}
+
+/* The header shares the body's measure and both are centred.
+   Capping the body alone left the fields in a column against the left edge with
+   a third of the drawer empty beside them, while the close control stayed out
+   at the window edge with nothing near it — the panel read as broken rather
+   than as a considered column. Prose is capped separately at 66ch below, so the
+   measure here is free to be wider than a comfortable line of text. */
+.gp-head,
+.gp-body {
+  max-width: 860px;
+  margin-inline: auto;
 }
 
 .gp-section {
@@ -1806,6 +1822,57 @@ input[type="radio"] {
   font-family: var(--data);
   font-size: 11px;
   color: var(--faint);
+}
+
+/* The AI curation steps, set apart from the buttons above them because they are
+   a short procedure rather than four more actions. */
+.curate {
+  margin-top: 10px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  background: var(--slab);
+  border: 1px solid var(--edge);
+  border-radius: 10px;
+}
+
+.curate-step {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 7px;
+}
+
+.curate-note {
+  margin: 0;
+  max-width: 60ch;
+  font-family: var(--data);
+  font-size: 11px;
+  line-height: 1.55;
+  color: var(--faint);
+}
+
+.curate-note code {
+  font-family: var(--data);
+  color: var(--mute);
+}
+
+/* The path is the one thing here that gets copied by hand, so it wraps in full
+   rather than being cut off at the panel edge. */
+.curate-path {
+  display: block;
+  width: 100%;
+  padding: 7px 9px;
+  font-family: var(--data);
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text);
+  background: var(--ink);
+  border: 1px solid var(--edge);
+  border-radius: 6px;
+  overflow-wrap: anywhere;
+  user-select: all;
 }
 
 /* Same reason the drawers cap theirs: a line of explanation running the full

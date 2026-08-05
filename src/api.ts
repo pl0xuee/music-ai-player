@@ -2,6 +2,8 @@ import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import type {
+  CurationExport,
+  CurationReport,
   DownloadJob,
   EngineStatus,
   GenerationProgress,
@@ -23,6 +25,8 @@ import {
   DEV_STYLES,
   devJobs,
   devPanel,
+  devCurationExport,
+  devCurationReport,
   devPlaylists,
   devSourceUrl,
   devStats,
@@ -531,6 +535,24 @@ export function mediaKeyStatus(): Promise<MediaKeys> {
 // ---------------------------------------------------------------------------
 // Playlists
 // ---------------------------------------------------------------------------
+
+/**
+ * Write the library and its instructions for whatever is going to read them.
+ *
+ * The app never talks to a model. It describes the library in a file, and a
+ * plan comes back in another one — so this works with any assistant, a local
+ * model, or someone editing JSON by hand.
+ */
+export function curationExport(): Promise<CurationExport> {
+  if (!IN_TAURI) return Promise.resolve(devCurationExport());
+  return invoke<CurationExport>("curation_export");
+}
+
+/** Apply a plan. `null` uses `plan.json` in the curation folder. */
+export function curationApply(path: string | null): Promise<CurationReport> {
+  if (!IN_TAURI) return Promise.resolve(devCurationReport());
+  return invoke<CurationReport>("curation_apply", { path });
+}
 
 export function listPlaylists(): Promise<Playlist[]> {
   if (!IN_TAURI) return Promise.resolve(devPlaylists());
