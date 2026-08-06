@@ -50,7 +50,7 @@ export function Transport(props: Props) {
   const played = length > 0 ? Math.min(position / length, 1) : 0;
 
   return (
-    <footer className="dock" aria-label="Transport">
+    <footer className={playing ? "dock is-playing" : "dock"} aria-label="Transport">
       <div className="dock-group">
         <button
           type="button"
@@ -134,11 +134,11 @@ export function Transport(props: Props) {
           </span>
         </div>
 
-
+        <span className="dock-sep" aria-hidden="true" />
 
         <span className="dock-label">Vol</span>
         <input
-          className="range is-short"
+          className="range is-short is-vol"
           type="range"
           min={0}
           max={1}
@@ -146,6 +146,10 @@ export function Transport(props: Props) {
           value={volume}
           onChange={(event) => onVolume(Number(event.target.value))}
           aria-label="Volume"
+          // Drawn on the track itself, so the level reads without hunting for
+          // the handle.
+          // eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+          style={({ "--level": volume } as React.CSSProperties)}
         />
       </div>
     </footer>

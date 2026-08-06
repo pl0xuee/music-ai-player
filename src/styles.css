@@ -784,12 +784,29 @@ body::after {
 
 /* --- dock ----------------------------------------------------------------- */
 
+/* The bar next to the buttons that drive it, and the meta out at the edge —
+   which is the same shape as the library header above it, and as everything
+   else in a window that aligns left. A centred transport is the other way to
+   arrange this, and it would be the only centred thing here.
+
+   The rail stops at 620px. Run across a whole wide window it is a hairline
+   drawn for a mile, with its two times so far apart they stop reading as a
+   pair; 620px is a bar you can take in and still scrub a long mix by seconds.
+
+   The last column takes the slack rather than the middle, so the rail begins
+   and ends in the same place whatever is queued. A bar that shifts sideways
+   when the next title changes length is a bar you have to find again. */
 .dock {
   grid-area: dock;
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  /* The last track is `1fr` rather than `minmax(0, 1fr)` on purpose: a zero
+     minimum lets the rail claim its 620px in a narrow window while the meta is
+     squeezed to nothing, and a flex row justified to the end overflows to the
+     *left* — the volume ends up drawn on top of the bar. Keeping the content
+     floor makes the rail give way instead, which is what it has to spare. */
+  grid-template-columns: auto minmax(240px, 620px) 1fr;
   align-items: center;
-  gap: 22px;
+  gap: 26px;
   padding: 0 var(--pad);
   background: linear-gradient(180deg, rgba(30, 36, 47, 0.82), rgba(18, 22, 30, 0.92));
   border-top: 1px solid var(--edge-soft);
@@ -804,12 +821,28 @@ body::after {
   gap: 10px;
 }
 
+/* The right-hand group is as wide as its column, and its column is as wide as
+   the left one. Left to itself the meta would sit wherever a short queue title
+   left it, drifting away from the edge the volume is supposed to live on. */
+.dock > .dock-group:last-child {
+  justify-content: flex-end;
+}
+
 .dock-label {
   font-size: 9.5px;
   font-weight: 600;
   letter-spacing: 0.1em;
   text-transform: uppercase;
   color: var(--faint);
+}
+
+/* What is coming and how loud it will be are two unrelated things that happen
+   to share a corner. Without a line between them they read as one four-part
+   caption, and the eye has to sort out which words go with which control. */
+.dock-sep {
+  width: 1px;
+  height: 20px;
+  background: var(--edge-soft);
 }
 
 /* The play control is the only filled thing in the interface, because it is
@@ -889,19 +922,29 @@ body::after {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
-  gap: 12px;
+  gap: 14px;
 }
 
 .scrub-time {
   font-family: var(--data);
   font-size: 11px;
   color: var(--faint);
-  min-width: 42px;
+  /* Fixed width and fixed digits: the clock counts through 1 and 8 several
+     times a second, and without both the rail would breathe in and out. */
+  min-width: 44px;
+  font-variant-numeric: tabular-nums;
 }
 
 .scrub-time.is-elapsed {
   color: var(--mute);
   text-align: right;
+}
+
+/* The elapsed side is the only number in the dock that is moving, and it is
+   moving because a particular deck is playing. Giving it that deck's colour
+   costs nothing and ties the bar to the light at the top of the window. */
+.dock.is-playing .scrub-time.is-elapsed {
+  color: var(--live);
 }
 
 /* The handover, drawn where it actually matters.
@@ -912,10 +955,21 @@ body::after {
    with no second widget needed to explain it. */
 .scrub-rail {
   position: relative;
-  height: 4px;
+  height: 5px;
   border-radius: 3px;
-  background: #12161e;
-  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.6);
+  /* Light enough to be seen against the dock it sits on. The old value was
+     darker than the panel behind it, so the unplayed end of a track read as
+     empty space and the bar looked like it stopped where the colour did. */
+  background: #1a202b;
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.55);
+  transition: background 120ms ease;
+}
+
+/* The whole strip is the hit target, so the whole strip lights when the pointer
+   is anywhere over it — hovering the 5px line itself to find that out is a
+   worse deal than the pixels are worth. */
+.scrub:hover .scrub-rail {
+  background: #212936;
 }
 
 .scrub-played {
@@ -977,6 +1031,11 @@ body::after {
   align-items: baseline;
   gap: 8px;
   max-width: 250px;
+  /* Shrinks to the label and a couple of words, and no further. Between 940px —
+     where the block appears at all — and about 1050 it is the thing the layout
+     takes from, and an ellipsis with no words in front of it says less than the
+     rail would have said with those pixels. */
+  min-width: 96px;
   font-size: 11.5px;
   color: var(--faint);
 }
@@ -989,7 +1048,13 @@ body::after {
   text-transform: uppercase;
 }
 
+/* The title is the part that gives way. `min-width: 0` belongs here and not on
+   `.next`: on the block it lets the whole thing — label included — collapse to
+   nothing in a narrow window, which is how the queue quietly disappeared while
+   the volume kept its full width. Here it means the words truncate and the
+   label stays. */
 .next-title {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1014,6 +1079,20 @@ body::after {
 
 .range.is-short {
   width: 84px;
+}
+
+/* The volume knob sat on a dead grey line, which reads as a disabled control
+   until you find the handle on it. Filling the track to the level says the same
+   thing the handle does, at a glance and from across the room.
+
+   Grey rather than the accent on purpose: the accent in this dock means "this
+   is where the music is", and it belongs to the position bar alone. */
+.range.is-vol {
+  background: linear-gradient(
+    90deg,
+    var(--mute) 0 calc(var(--level, 1) * 100%),
+    var(--edge-soft) calc(var(--level, 1) * 100%)
+  );
 }
 
 /* A slider next to its readout, rather than a full-width bar with the number
@@ -2078,6 +2157,12 @@ input[type="radio"] {
   }
 
   .next {
+    display: none;
+  }
+
+  /* Goes with it. A divider with nothing on one side of it is a scratch on the
+     glass. */
+  .dock-sep {
     display: none;
   }
 }
