@@ -114,40 +114,10 @@ export function LibraryPanel(props: Props) {
     <aside className="aside" aria-label="Library">
       <header className="lib-head">
         <PanelTabs view={view} onView={onView} playlistCount={playlistCount} />
-        <div className="lib-tools">
-          {genreOptions.length > 0 && (
-            <Picker
-              className="is-quiet"
-              label="Filter by genre"
-              value={genre}
-              onChange={onGenre}
-              options={[
-                { value: "all", label: "All genres" },
-                ...genreOptions.map((option) => ({ value: option, label: option })),
-              ]}
-            />
-          )}
-          <span className="lib-count">
-            {searching ? `${found.length} of ${tracks.length}` : `${tracks.length} ready`}
-          </span>
-          <button
-            type="button"
-            className="icon"
-            onClick={onRefresh}
-            disabled={refreshing}
-            title="Re-read the library and drop tracks whose files have gone"
-            aria-label="Refresh the library"
-          >
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M20 12a8 8 0 1 1-2.34-5.66" />
-              <path d="M20 4v4.5h-4.5" />
-            </svg>
-          </button>
-        </div>
 
-        {/* Its own line under the tabs rather than a fourth control squeezed in
-            beside them. A field narrow enough to fit up there is too narrow to
-            read back what was typed into it. */}
+        {/* Beside the tabs rather than on a line of its own: a few words is all
+            a query ever is, and a field that wide leaves the header's second
+            line carrying almost nothing. */}
         <div className="lib-find">
           <svg className="lib-find-icon" viewBox="0 0 24 24" aria-hidden="true">
             <circle cx="10.5" cy="10.5" r="6.5" />
@@ -186,6 +156,37 @@ export function LibraryPanel(props: Props) {
               ✕
             </button>
           )}
+        </div>
+
+        <div className="lib-tools">
+          {genreOptions.length > 0 && (
+            <Picker
+              className="is-quiet"
+              label="Filter by genre"
+              value={genre}
+              onChange={onGenre}
+              options={[
+                { value: "all", label: "All genres" },
+                ...genreOptions.map((option) => ({ value: option, label: option })),
+              ]}
+            />
+          )}
+          <span className="lib-count">
+            {searching ? `${found.length} of ${tracks.length}` : `${tracks.length} ready`}
+          </span>
+          <button
+            type="button"
+            className="icon"
+            onClick={onRefresh}
+            disabled={refreshing}
+            title="Re-read the library and drop tracks whose files have gone"
+            aria-label="Refresh the library"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M20 12a8 8 0 1 1-2.34-5.66" />
+              <path d="M20 4v4.5h-4.5" />
+            </svg>
+          </button>
         </div>
       </header>
 

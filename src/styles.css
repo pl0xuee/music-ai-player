@@ -494,12 +494,9 @@ body::after {
   min-height: 0;
 }
 
-/* Wraps, so the search field below can claim a whole line of its own without
-   the tabs and the tools having to give up any of theirs. */
 .lib-head {
   display: flex;
   max-width: var(--content-max);
-  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 14px;
@@ -549,6 +546,9 @@ body::after {
   font-family: var(--data);
   font-size: 11px;
   color: var(--faint);
+  /* "6 ready" broken over two lines is a taller header for no gain. The search
+     field beside it shrinks instead — it has a whole placeholder to spare. */
+  white-space: nowrap;
 }
 
 .lib-list {
@@ -2107,13 +2107,23 @@ input[type="radio"] {
 
 /* --- library search ------------------------------------------------------- */
 
-/* `flex: 1 0 100%` is what puts it on its own line: it asks for the full width
-   of the header, which no other basis can be satisfied alongside. */
+/* Rides the header's one line, between the tabs and the tools. It takes what
+   those two leave, up to the width of the longest query anyone types — a few
+   words. Past that the field is a long empty box, which reads as a place where
+   a control was meant to go. */
 .lib-find {
   position: relative;
   display: flex;
   align-items: center;
-  flex: 1 0 100%;
+  flex: 0 1 280px;
+  /* An auto margin eats the header's slack before `space-between` can, which is
+     what keeps the field beside the tabs instead of stranded in the middle of a
+     wide window with a gap on either side of it. */
+  margin-right: auto;
+  /* A flex item will not shrink below its content by default, and the field's
+     content is its 58px of padding plus a default input width. Letting it go
+     under that keeps the tabs and the tools whole in a narrow window. */
+  min-width: 0;
 }
 
 .lib-find-icon {
