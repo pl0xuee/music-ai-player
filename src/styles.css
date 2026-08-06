@@ -494,9 +494,12 @@ body::after {
   min-height: 0;
 }
 
+/* Wraps, so the search field below can claim a whole line of its own without
+   the tabs and the tools having to give up any of theirs. */
 .lib-head {
   display: flex;
   max-width: var(--content-max);
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 14px;
@@ -2100,6 +2103,77 @@ input[type="radio"] {
 .icon:disabled {
   opacity: 0.4;
   cursor: default;
+}
+
+/* --- library search ------------------------------------------------------- */
+
+/* `flex: 1 0 100%` is what puts it on its own line: it asks for the full width
+   of the header, which no other basis can be satisfied alongside. */
+.lib-find {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: 1 0 100%;
+}
+
+.lib-find-icon {
+  position: absolute;
+  left: 10px;
+  width: 13px;
+  height: 13px;
+  stroke: var(--faint);
+  fill: none;
+  stroke-width: 1.9;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  /* The glass is decoration sitting on top of the field; clicking it should put
+     the caret in the field, not stop at the icon. */
+  pointer-events: none;
+  transition: stroke 120ms ease;
+}
+
+.lib-find:focus-within .lib-find-icon {
+  stroke: var(--live);
+}
+
+/* Room on both sides for the glass and for the clear button. */
+.input.is-find {
+  width: 100%;
+  padding-left: 30px;
+  padding-right: 28px;
+}
+
+.input.is-find::placeholder {
+  color: var(--faint);
+}
+
+.lib-find-clear {
+  position: absolute;
+  right: 5px;
+  width: 20px;
+  height: 20px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--faint);
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.lib-find-clear:hover {
+  color: var(--paper);
+}
+
+/* Set as quietly as the other hints — a search that found nothing is a normal
+   thing to have happened, not an error. */
+.lib-none {
+  padding: 6px 12px;
+  max-width: 72ch;
+  font-family: var(--data);
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--faint);
 }
 
 /* --- style chips ---------------------------------------------------------- */

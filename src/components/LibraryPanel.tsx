@@ -1,10 +1,11 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { PanelView } from "./PanelTabs";
 import { PanelTabs } from "./PanelTabs";
 import { Picker } from "./Picker";
 import type { Playlist, Track } from "../types";
 import { SOURCE_LABEL, isGenerated, meaningfulGenre } from "../types";
 import { clock, key } from "../format";
+import { searchTracks } from "../search";
 
 interface Props {
   view: PanelView;
@@ -52,6 +53,38 @@ export function LibraryPanel(props: Props) {
   const [draft, setDraft] = useState<string | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
 
+  // The search lives here rather than in App because nothing outside this panel
+  // reads it. The genre filter is App's because the shuffle bag draws through
+  // it — narrowing the genre really does change what plays next. Typing here
+  // does not: it changes what is on screen, and the queue keeps drawing from
+  // the whole filtered library, which is what every player does and what makes
+  // it safe to search while something is playing.
+  const [query, setQuery] = useState("");
+  const fieldRef = useRef<HTMLInputElement | null>(null);
+  const found = useMemo(() => searchTracks(tracks, query), [tracks, query]);
+  const searching = found !== tracks;
+
+  // Reaching the field without the mouse, by both of the shortcuts people try.
+  // Neither takes a keystroke off a field that already has focus — including
+  // this one, where "/" is a character someone may well be searching for.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent): void => {
+      const wanted = event.key === "/" || (event.key === "f" && (event.ctrlKey || event.metaKey));
+      if (!wanted) return;
+      const target = event.target;
+      if (target instanceof HTMLElement && /INPUT|SELECT|TEXTAREA/.test(target.tagName)) return;
+      // A drawer is open over this panel, so the keystroke belongs to it. Asked
+      // of the document rather than of the target, because nothing inside a
+      // drawer need have focus for the drawer to be the thing being used.
+      if (document.querySelector(".genpanel.is-open") !== null) return;
+      event.preventDefault();
+      fieldRef.current?.focus();
+      fieldRef.current?.select();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, []);
+
   const close = () => {
     setMenuFor(null);
     setDraft(null);
@@ -94,7 +127,9 @@ export function LibraryPanel(props: Props) {
               ]}
             />
           )}
-          <span className="lib-count">{tracks.length} ready</span>
+          <span className="lib-count">
+            {searching ? `${found.length} of ${tracks.length}` : `${tracks.length} ready`}
+          </span>
           <button
             type="button"
             className="icon"
@@ -109,10 +144,67 @@ export function LibraryPanel(props: Props) {
             </svg>
           </button>
         </div>
+
+        {/* Its own line under the tabs rather than a fourth control squeezed in
+            beside them. A field narrow enough to fit up there is too narrow to
+            read back what was typed into it. */}
+        <div className="lib-find">
+          <svg className="lib-find-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="10.5" cy="10.5" r="6.5" />
+            <path d="m15.4 15.4 4.6 4.6" />
+          </svg>
+          <input
+            ref={fieldRef}
+            type="text"
+            className="input is-find"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key !== "Escape") return;
+              // Escape empties a field with something in it and steps out of
+              // one without, so it is never a key that appears to do nothing.
+              if (query === "") event.currentTarget.blur();
+              else setQuery("");
+            }}
+            placeholder="Search title, artist, genre"
+            aria-label="Search the library"
+            title="Search the library — Ctrl+F, or /"
+            spellCheck={false}
+            autoComplete="off"
+          />
+          {query !== "" && (
+            <button
+              type="button"
+              className="lib-find-clear"
+              onClick={() => {
+                setQuery("");
+                fieldRef.current?.focus();
+              }}
+              aria-label="Clear the search"
+              title="Clear the search"
+            >
+              ✕
+            </button>
+          )}
+        </div>
       </header>
 
+      {/* Inside the scroller rather than beside it: `.aside` is a two-row grid,
+          and a third child would land in an implicit row and take the list out
+          of the one that scrolls. */}
       <div className="lib-list">
-        {tracks.map((track, index) => {
+        {searching && found.length === 0 && (
+          // Naming the genre matters. A filter set at the other end of the
+          // header is the likeliest reason a track that really is in the
+          // library cannot be found, and it is not what the eye is on while
+          // typing.
+          <p className="lib-none" role="status">
+            Nothing matches “{query.trim()}”
+            {genre === "all" ? "" : ` in ${genre}`}.
+          </p>
+        )}
+
+        {found.map((track, index) => {
           const classes = ["row", "is-pl"];
           if (track.id === currentId) classes.push("is-current");
           if (track.rating === -1) classes.push("is-buried");
