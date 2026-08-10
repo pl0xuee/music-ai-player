@@ -85,6 +85,8 @@ export interface ScanReport {
   added: number;
   /** Already in the library, matched by path. */
   skipped: number;
+  /** Already held, and re-read from the file because the title was its filename. */
+  updated: number;
   /** Looked like audio, but nothing could decode it. */
   failed: number;
   /** True when the scan hit its file ceiling before running out of folders. */

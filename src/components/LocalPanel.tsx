@@ -130,10 +130,11 @@ export function LocalPanel({ open, onClose, onScan, scanning }: Props) {
           <section className="gp-section">
             <h2 className="gp-section-key">What happens</h2>
             <p className="gp-note">
-              Sub-folders are searched, and mp3, flac, m4a, ogg, opus and wav are picked up.
-              Nothing is copied or moved — each track points at the file where it already lives, so
-              removing it from the library never touches your collection. Running this again on the
-              same folder adds only what is new.
+              Sub-folders are searched, and mp3, flac, m4a, ogg, opus and wav are picked up. Each
+              track is titled from the file’s own tags, falling back to its name. Nothing is copied
+              or moved — a track points at the file where it already lives, so removing it from the
+              library never touches your collection. Running this again on the same folder adds only
+              what is new, and repairs any track still going by its filename.
             </p>
           </section>
 
@@ -158,8 +159,9 @@ export function LocalPanel({ open, onClose, onScan, scanning }: Props) {
             <section className="gp-section">
               <h2 className="gp-section-key">Result</h2>
               <p className="dl-report-line">
-                {report.added} added · {report.skipped} already in the library · {report.failed}{" "}
-                could not be read
+                {report.added} added · {report.skipped} already in the library
+                {report.updated > 0 ? ` · ${report.updated} retitled` : ""} · {report.failed} could
+                not be read
                 {report.truncated ? " · stopped at the 20,000-file limit" : ""}
               </p>
               {report.errors.map((line, index) => (

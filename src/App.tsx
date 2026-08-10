@@ -533,6 +533,7 @@ export default function App() {
         reloadLibrary();
         const parts: string[] = [];
         if (report.added > 0) parts.push(`Added ${report.added}`);
+        if (report.updated > 0) parts.push(`retitled ${report.updated} from their tags`);
         if (report.skipped > 0) parts.push(`${report.skipped} already in the library`);
         if (report.failed > 0) parts.push(`${report.failed} could not be read`);
         if (report.truncated) parts.push("stopped at the 20,000-file limit");

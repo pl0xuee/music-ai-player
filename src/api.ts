@@ -224,7 +224,14 @@ function forgetBuffered(id: number): void {
  */
 export function scanLocal(paths: string[]): Promise<ScanReport> {
   if (!IN_TAURI || paths.length === 0) {
-    return Promise.resolve({ added: 0, skipped: 0, failed: 0, truncated: false, errors: [] });
+    return Promise.resolve({
+      added: 0,
+      skipped: 0,
+      updated: 0,
+      failed: 0,
+      truncated: false,
+      errors: [],
+    });
   }
   return invoke<ScanReport>("scan_local", { paths });
 }

@@ -780,17 +780,21 @@ pub fn find_by_video_id(conn: &Connection, video_id: &str) -> Result<Option<i64>
     })
 }
 
-/// Row id of a track already pointing at this exact path, if there is one.
+/// Row id and title of a track already pointing at this exact path.
 ///
 /// How a re-scan of the same folder stays idempotent. Matching on the path
 /// rather than on the audio means a file the user has since renamed comes in
 /// again as a second row, which is the safer way round: a duplicate is visible
 /// and deletable, a silently skipped file looks like the scanner is broken.
-pub fn find_by_path(conn: &Connection, path: &str) -> Result<Option<i64>, String> {
+///
+/// The title comes back with it because the scanner has one reason to look at a
+/// row it is about to skip: deciding whether that title is a real one or the
+/// filename standing in for it. See `local::probe`.
+pub fn find_by_path(conn: &Connection, path: &str) -> Result<Option<(i64, String)>, String> {
     conn.query_row(
-        "SELECT id FROM tracks WHERE path = ?1",
+        "SELECT id, title FROM tracks WHERE path = ?1",
         rusqlite::params![path],
-        |row| row.get(0),
+        |row| Ok((row.get(0)?, row.get(1)?)),
     )
     .map(Some)
     .or_else(|e| match e {
@@ -835,6 +839,36 @@ pub fn insert_local(conn: &Connection, t: &LocalTrack) -> Result<i64, String> {
     )
     .map_err(|e| format!("cannot record {}: {e}", t.path))?;
     Ok(conn.last_insert_rowid())
+}
+
+/// Re-state a local row from a fresh probe of the file it already points at.
+///
+/// Only the four columns a probe can speak to are touched, and only on a `local`
+/// row: the path is the identity here, not something to rewrite, and anything
+/// the user has since done to the row elsewhere — a playlist it sits in, when it
+/// was added — is none of the scanner's business.
+///
+/// `duration` is coalesced rather than assigned. A probe that read tags but
+/// could not measure the file must not blank the number the crossfade schedules
+/// itself against.
+pub fn update_local_meta(conn: &Connection, id: i64, t: &LocalTrack) -> Result<(), String> {
+    conn.execute(
+        &format!(
+            "UPDATE tracks
+                SET title = ?1, genre = ?2, uploader = ?3,
+                    duration = COALESCE(?4, duration)
+              WHERE id = ?5 AND source = '{SOURCE_LOCAL}'"
+        ),
+        rusqlite::params![
+            t.title,
+            t.genre.as_deref().unwrap_or(SOURCE_LOCAL),
+            t.artist,
+            t.duration,
+            id,
+        ],
+    )
+    .map_err(|e| format!("cannot update {}: {e}", t.path))?;
+    Ok(())
 }
 
 /// Every `video_id` already imported. Handed to `yt-dlp --download-archive` so

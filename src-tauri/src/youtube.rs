@@ -11,13 +11,18 @@
 //! `ffmpeg` to transcode, so killing the pid we hold leaves the transcode
 //! running. The process group is what actually gets cancelled.
 //!
-//! Two invariants hold the library together:
+//! Three invariants hold the library together:
 //!
 //! * **`status = 'ready'` is written only after the file is on disk and
 //!   non-empty.** A cancelled or failed download leaves no row at all, because
 //!   the shuffle bag would otherwise hand the player a track it can never load.
 //! * **A `video_id` appears at most once.** Re-pasting a URL is a no-op that
 //!   says so, and expanding a playlist skips what is already held.
+//! * **A finished file never takes another's name.** Downloads are written
+//!   under the video ID, which is unique, and renamed to their title only once
+//!   the directory can be checked for a clash — so a second video of the same
+//!   name cannot overwrite the audio a `ready` row is already pointing at. See
+//!   [`rename_to_title`].
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -58,6 +63,12 @@ const INCOMING_DIRNAME: &str = ".incoming";
 /// Ceiling on how many entries one pasted playlist may expand to. A pasted
 /// 2000-video mix should not silently become a two-day download.
 const PLAYLIST_CAP: u32 = 200;
+
+/// Bytes of title kept in a filename, matching the `.80B` in the output
+/// template. Long enough for any real title, short enough that the result
+/// survives a filesystem with a 255-byte limit once an extension and a
+/// disambiguating suffix are added.
+const NAME_BYTES: usize = 80;
 
 /// Finished jobs kept in the queue view before the oldest are dropped.
 const HISTORY: usize = 40;
@@ -373,6 +384,76 @@ impl Tools {
             tracks_dir: lib.tracks_dir().display().to_string(),
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Naming
+// ---------------------------------------------------------------------------
+
+/// Give a finished download a name made of its title alone.
+///
+/// `yt-dlp` is asked for `<id>-<title>` and the ID is taken off here, rather
+/// than simply left out of the output template, because the ID is what makes
+/// the name it writes unique. Two videos really can share a title, and the
+/// moment a template stops distinguishing them `--force-overwrites` turns the
+/// second download into a silent overwrite of the first — whose row is still in
+/// the library, still `ready`, and now playing somebody else's audio.
+///
+/// Renaming afterwards keeps the guarantee and drops the ID, because by then
+/// the file is on disk and the directory can be *looked at*: a clash is
+/// something to see rather than something to guess at. See [`free_name`].
+///
+/// Best effort in every failure. The download is already complete and already
+/// correct; a share that will not rename, or a name that cannot be built from
+/// the title, leaves the file under the name `yt-dlp` gave it rather than
+/// failing an import over how it reads.
+fn rename_to_title(file: &Path, title: &str) -> PathBuf {
+    let (Some(dir), Some(stem)) = (file.parent(), crate::local::filename_safe(title, NAME_BYTES))
+    else {
+        return file.to_path_buf();
+    };
+    let Some(target) = free_name(dir, &stem, file.extension().and_then(|e| e.to_str()), file)
+    else {
+        return file.to_path_buf();
+    };
+    if target == file {
+        return file.to_path_buf();
+    }
+    match std::fs::rename(file, &target) {
+        Ok(()) => target,
+        Err(_) => file.to_path_buf(),
+    }
+}
+
+/// The first of `<stem>.<ext>`, `<stem> (2).<ext>`, … that nothing occupies.
+///
+/// `current` counts as free: it is the file being renamed, so finding it there
+/// is finding the file itself.
+///
+/// The extension is joined by hand rather than through `set_extension`, which
+/// replaces everything after the *last* dot in the name — enough to turn
+/// `Track 1.5 Remix` into `Track 1.opus`.
+///
+/// `None` once the suffixes run out, which means a folder holding fifty tracks
+/// of one name; keeping the ID is the better answer at that point than trying
+/// forever.
+fn free_name(dir: &Path, stem: &str, ext: Option<&str>, current: &Path) -> Option<PathBuf> {
+    const TRIES: u32 = 50;
+    for n in 1..=TRIES {
+        let name = if n == 1 {
+            stem.to_string()
+        } else {
+            format!("{stem} ({n})")
+        };
+        let candidate = dir.join(match ext {
+            Some(ext) => format!("{name}.{ext}"),
+            None => name,
+        });
+        if candidate == current || !candidate.exists() {
+            return Some(candidate);
+        }
+    }
+    None
 }
 
 /// Real duration of a finished file.
@@ -1204,7 +1285,12 @@ impl Downloads {
 
                 if let Some(path) = trimmed.strip_prefix(FILE_TAG) {
                     let Some(meta) = pending.take() else { return };
-                    match self.commit(&meta, path.trim(), playlist_id) {
+                    // Renamed before the row is written, never after: the path
+                    // is what the player opens, and a row committed against the
+                    // old name would be pointing at nothing the moment the
+                    // rename went through.
+                    let landed = rename_to_title(Path::new(path.trim()), &meta.title());
+                    match self.commit(&meta, &landed, playlist_id) {
                         Ok(track_id) => self.with_job(job_id, |job| {
                             job.added += 1;
                             job.percent = 100.0;
@@ -1319,8 +1405,7 @@ impl Downloads {
     /// sits in `tracks/`, which `clear_dir` never sweeps (only `.incoming` is
     /// scratch), so nothing would ever collect it, and `--force-overwrites`
     /// means a later re-import would not even notice it was there.
-    fn commit(&self, meta: &Meta, path: &str, playlist_id: Option<i64>) -> Result<i64, String> {
-        let file = Path::new(path);
+    fn commit(&self, meta: &Meta, file: &Path, playlist_id: Option<i64>) -> Result<i64, String> {
         let size = std::fs::metadata(file)
             .map_err(|e| format!("\"{}\" did not land on disk: {e}", meta.title()))?
             .len();
@@ -1689,6 +1774,89 @@ total nonsense on this line
         }
     }
 
+    fn naming_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "music-ai-yt-name-{tag}-{}-{:?}",
+            std::process::id(),
+            thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        dir
+    }
+
+    fn written(path: &Path) -> &Path {
+        std::fs::write(path, b"bytes").expect("write");
+        path
+    }
+
+    #[test]
+    fn a_finished_download_loses_the_id_it_was_written_under() {
+        let dir = naming_dir("plain");
+        let file = dir.join("dQw4w9WgXcQ-Never Gonna Give You Up.opus");
+        let landed = rename_to_title(written(&file), "Never Gonna Give You Up");
+
+        assert_eq!(landed, dir.join("Never Gonna Give You Up.opus"));
+        assert!(landed.is_file(), "the audio moved with the name");
+        assert!(!file.exists(), "and nothing was left under the old one");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The reason the ID stays in `yt-dlp`'s output template. Both of these are
+    /// real, different videos; neither may end up wearing the other's audio.
+    #[test]
+    fn two_videos_of_one_title_get_a_file_each() {
+        let dir = naming_dir("clash");
+        let first = rename_to_title(written(&dir.join("aaaaaaaaaaa-Intro.opus")), "Intro");
+        let second = rename_to_title(written(&dir.join("bbbbbbbbbbb-Intro.opus")), "Intro");
+
+        assert_eq!(first, dir.join("Intro.opus"));
+        assert_eq!(second, dir.join("Intro (2).opus"));
+        assert!(first.is_file() && second.is_file());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_title_a_filesystem_would_refuse_is_still_given_a_name() {
+        let dir = naming_dir("reserved");
+        let landed = rename_to_title(
+            written(&dir.join("aaaaaaaaaaa-x.opus")),
+            "AC/DC | Live: 1978?",
+        );
+
+        // The scanner reads this back as the title it started as; that the two
+        // are inverses is pinned in `local`, next to the table they share.
+        assert_eq!(landed, dir.join("AC⧸DC ｜ Live： 1978？.opus"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A dot is not reserved, so a title made only of them sanitises to nothing.
+    /// The file is already downloaded and already correct; it keeps the name it
+    /// has rather than the import failing over what to call it.
+    #[test]
+    fn a_title_that_leaves_no_name_keeps_the_one_ytdlp_gave() {
+        let dir = naming_dir("empty");
+        let file = dir.join("aaaaaaaaaaa-....opus");
+        let landed = rename_to_title(written(&file), "...");
+
+        assert_eq!(landed, file);
+        assert!(landed.is_file());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_long_title_is_cut_where_ytdlp_would_have_cut_it() {
+        let dir = naming_dir("long");
+        let title = "é".repeat(60); // 120 bytes, and no boundary at 80
+        let landed = rename_to_title(written(&dir.join("aaaaaaaaaaa-x.opus")), &title);
+
+        let stem = landed.file_stem().expect("a stem").to_string_lossy().into_owned();
+        assert!(stem.len() <= NAME_BYTES, "{} bytes", stem.len());
+        assert_eq!(stem, "é".repeat(40), "cut on a character, not mid-way through one");
+        assert!(landed.is_file());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// A stand-in for `yt-dlp` that prints exactly the lines the real one
     /// prints, in the order the real one prints them, with no network in sight.
     #[cfg(target_os = "linux")]
@@ -1841,11 +2009,19 @@ wait
                 .unwrap_or(true),
             "the scratch directory was not cleared"
         );
+        // Everything but the scratch directory and the one file the surviving
+        // row points at — named from the row rather than spelled out, because
+        // what the file ends up called is `rename_to_title`'s business.
+        let kept = Path::new(&rows[0].1)
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .expect("the row points at a named file");
+        assert_eq!(kept, "First.mp3", "the video ID is off the finished file");
         let strays: Vec<String> = std::fs::read_dir(&home)
             .expect("read tracks dir")
             .flatten()
             .map(|e| e.file_name().to_string_lossy().into_owned())
-            .filter(|name| name != INCOMING_DIRNAME && name != "aaaaaaaaaaa-First.mp3")
+            .filter(|name| name != INCOMING_DIRNAME && *name != kept)
             .collect();
         assert!(strays.is_empty(), "left debris in tracks/: {strays:?}");
 
@@ -2045,6 +2221,22 @@ exit 0
             "and it has audio in it"
         );
 
+        // The name yt-dlp wrote it under is not the name it kept: the ID that
+        // made it unique during the download is gone, and what is left is the
+        // title. Compared against the title from this same run rather than a
+        // literal, because YouTube owns that string, not this test.
+        let stem = Path::new(&path)
+            .file_stem()
+            .expect("a named file")
+            .to_string_lossy()
+            .into_owned();
+        assert!(!stem.starts_with("jNQXAC9IVRw"), "the ID is still on {stem}");
+        assert_eq!(
+            Some(stem),
+            crate::local::filename_safe(&title, NAME_BYTES),
+            "the file is named after its title"
+        );
+
         downloads.shutdown();
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -2084,7 +2276,7 @@ exit 0
 
         // No playlist 9999: the append fails once the track row is already in.
         let err = downloads
-            .commit(&meta, &file.display().to_string(), Some(9999))
+            .commit(&meta, &file, Some(9999))
             .expect_err("the commit cannot succeed");
 
         assert!(
