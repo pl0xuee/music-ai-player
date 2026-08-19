@@ -99,7 +99,7 @@ jobs:
       # lets the host's own Wayland client library load, which is the one that
       # matches the host's Mesa. Verified against the 0.1.2 AppImage: removing
       # this file alone turns a black window into a rendered interface.
-      - name: Repack the AppImage against the host's libwayland
+      - name: Repack the AppImage for the host's Wayland stack
         run: |
           set -euo pipefail
           cd src-tauri/target/release/bundle/appimage
@@ -108,6 +108,36 @@ jobs:
           test -f squashfs-root/usr/lib/libwayland-client.so.0 \
             || { echo "::error::bundled libwayland-client.so.0 not found — has the bundler changed?"; exit 1; }
           rm -f squashfs-root/usr/lib/libwayland-client.so.0
+
+          # linuxdeploy's GTK hook hard-codes `export GDK_BACKEND=x11`, citing a
+          # 2024 WebKitGTK crash (tauri#8541). The hook is sourced by AppRun, so
+          # nothing outside the bundle can override it, and the cost is that
+          # every window is an XWayland window.
+          #
+          # Under a compositor with xwayland:force_zero_scaling, X clients are
+          # handed raw pixels and have to scale themselves from one session-wide
+          # GDK_SCALE — a single integer, shared by every X client on the
+          # desktop. That cannot be correct on two monitors at different scales
+          # at once: the app is drawn at 2x on one screen or a fifth too small
+          # on another, and no per-window rule exists to fix it, because
+          # XWayland is one X server shared by all of them. A Wayland-native
+          # window is scaled per output by the compositor and follows a monitor
+          # change by itself, so the problem stops existing rather than moving.
+          #
+          # Verified against WebKitGTK 2.52.5: the crash does not reproduce, the
+          # window comes up Wayland-native, and the GStreamer warnings logged at
+          # startup are identical on both backends — 15 either way — so nothing
+          # here is trading one bug for another.
+          #
+          # A list rather than a bare `wayland`, so an X11 session still starts,
+          # and defaulted rather than assigned, so anyone who does hit a
+          # regression can put x11 back from the environment without unpacking
+          # the bundle.
+          HOOK=squashfs-root/apprun-hooks/linuxdeploy-plugin-gtk.sh
+          grep -q '^export GDK_BACKEND=x11' "$HOOK" \
+            || { echo "::error::no forced GDK_BACKEND=x11 in the GTK hook — has linuxdeploy changed?"; exit 1; }
+          sed -i 's|^export GDK_BACKEND=x11.*|export GDK_BACKEND="${GDK_BACKEND:-wayland,x11}"|' "$HOOK"
+
           curl -fsSL -o appimagetool \
             https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
           chmod +x appimagetool
