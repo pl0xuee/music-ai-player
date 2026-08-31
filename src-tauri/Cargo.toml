@@ -51,6 +51,15 @@ rusqlite = { version = "0.40", features = ["bundled"] }
 httparse = "1"
 http-range = "0.1"
 
+# GDK is the only thing in the tree that knows a monitor's physical size in
+# millimetres, which is what `display.rs` needs to work out how dense the screen
+# the window is on actually is — Tauri's own monitor list stops at resolution
+# and scale factor. Already here as a transitive dependency of Tauri's GTK
+# backend, and pinned to the version that backend uses, so naming it adds
+# nothing to the build.
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = "0.18"
+
 # Signalling a *process group* (SIGINT for a clean, resumable cancel; SIGKILL as
 # the backstop) and PR_SET_PDEATHSIG both need raw syscalls that std does not
 # expose. See `engine::proc`.

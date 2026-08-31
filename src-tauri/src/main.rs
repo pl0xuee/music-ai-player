@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod desktop;
+mod display;
 mod engine;
 mod library;
 mod local;
@@ -102,6 +103,11 @@ fn main() {
             // MPRIS, so the desktop's media keys reach this window rather than
             // the anonymous service WebKit publishes for the <audio> element.
             mpris::attach(&handle);
+
+            // The stylesheet is written in pixels for one screen; this keeps
+            // those pixels the same physical size on whichever monitor the
+            // window is dragged onto.
+            display::follow_monitor(&handle);
 
             Ok(())
         })

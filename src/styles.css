@@ -2396,3 +2396,112 @@ input[type="radio"] {
 .select.is-quiet:hover {
   color: var(--paper);
 }
+
+/* --- shape ----------------------------------------------------------------
+
+   Three monitors, three different problems, and none of them is resolution —
+   the zoom applied in `display.rs` has already taken care of how big a pixel
+   is. What is left is the *shape* of the window, and specifically which way
+   the room is going.
+
+   Everything above this is written for the shape a desktop window usually has:
+   half again as wide as it is tall. The rules here are for the two ends the
+   layout was never asked about, and they only move the things whose size was a
+   guess about available room in the first place. The row, the dock and the
+   type scale are the same on every screen, because a track title is a track
+   title wherever it is read.
+
+   These are last in the file so they win on order rather than on specificity;
+   nothing here needs `!important`, and nothing here should acquire it. */
+
+/* --- shape: tall ----------------------------------------------------------
+
+   A monitor turned on its side. Height stops being the thing there is not
+   enough of and becomes the thing there is too much of: the library grows to
+   fifty-odd rows on its own, while the stage stays the band it had to be when
+   it was sharing 750 pixels with everything else.
+
+   So the spectrum gets the room. It is the one element in the interface that
+   is better simply for being bigger — a taller bank resolves more of what is
+   actually in the track, and it is the only thing on screen that is the music
+   rather than a description of it. The list loses the difference and does not
+   notice; it was going to be scrolled either way. */
+
+@media (max-aspect-ratio: 9 / 10) {
+  .deck {
+    height: 150px;
+  }
+
+  .stage {
+    gap: 18px;
+    padding-top: 30px;
+  }
+}
+
+/* --- shape: wide and short ------------------------------------------------
+
+   The other end: an ultrawide, where the window is two and a half times as
+   wide as it is tall and every pixel of height the stage takes is a row the
+   library does not get. The stage is on a fixed budget here and the list is
+   not, so the stage gives way — a slightly shorter spectrum and a tighter top
+   margin buy back three or four rows, which on a screen this shape is the
+   difference between a page of library and a strip of it.
+
+   The row width is deliberately not touched. It is capped at `--content-max`
+   for a reason that a wider monitor makes worse rather than better: past about
+   1400 pixels the gap between a title on the left and its duration on the
+   right stops being scannable, and the eye loses which number belongs to which
+   track. An ultrawide gets more rows, not longer ones. */
+
+@media (min-aspect-ratio: 2 / 1) and (min-height: 600px) {
+  .deck {
+    height: 58px;
+  }
+
+  .stage {
+    gap: 10px;
+    padding-top: 14px;
+  }
+}
+
+/* --- shape: narrow --------------------------------------------------------
+
+   Not a monitor so much as a window someone has dragged in from the side to
+   sit beside something else. Below the point where the rail's labels and the
+   list are competing for the same pixels, the rail drops to its icons: all
+   four buttons carry a `title`, so the words are a hover away rather than
+   gone, and the icons are what anyone who has used the window twice is aiming
+   at anyway.
+
+   `font-size: 0` rather than hiding a span, because the label is a bare text
+   node inside the button — there is nothing to select. The SVG is sized in
+   its own rule and does not inherit, so it survives. */
+
+@media (max-width: 820px) {
+  :root {
+    --rail-w: 54px;
+    --pad: 18px;
+  }
+
+  .rail-btn {
+    width: 44px;
+    padding: 9px 0;
+    font-size: 0;
+  }
+
+  .rail-btn .rail-dot {
+    right: 6px;
+  }
+
+  .bag,
+  .mark {
+    width: 44px;
+  }
+
+  /* The count under the tube is the whole point of the bag; the word above it
+     is a caption for a shape that is already unambiguous once you have seen it
+     empty once. */
+  .bag-key {
+    display: none;
+  }
+}
