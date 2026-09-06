@@ -83,6 +83,11 @@ jobs:
           tagName: ""
           args: --bundles appimage,deb
 
+      # This bug manifests under optimization. Exercise the patched GLib used
+      # by the GTK stack before any release is published.
+      - name: Test GLib security backport
+        run: cargo test --locked --release --manifest-path src-tauri/Cargo.toml --test glib_variant_str_iter
+
       # The AppImage ships a copy of every library the webview links, and one
       # of them cannot be allowed to win over the host's.
       #

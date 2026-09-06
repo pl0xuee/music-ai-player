@@ -1,6 +1,6 @@
 [package]
 name = "music-ai-player"
-version = "0.1.14"
+version = "0.1.15"
 edition = "2021"
 rust-version = "1.77.2"
 license = "MIT"
@@ -70,3 +70,8 @@ libc = "0.2"
 # spawn -> health-check -> progress -> cancel path runs without a display.
 [dev-dependencies]
 tauri = { version = "2", features = ["test"] }
+
+# GTK 0.18 requires glib 0.18. Backport the upstream VariantStrIter safety fix
+# until the GTK/Tauri stack supports a patched release. See vendor/README.md.
+[patch.crates-io]
+glib = { path = "vendor/glib" }

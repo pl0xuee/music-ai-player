@@ -277,6 +277,13 @@ Environment overrides, all optional: `MUSIC_AI_LIBRARY` (database location),
 
 ## Troubleshooting
 
+**GLib dependency security alert (RUSTSEC-2024-0429)** — the app uses a checked-in
+copy of glib 0.18.5 with the upstream iterator safety fix backported, because
+Tauri's GTK stack still requires the 0.18 bindings. See
+[the backport notes](src-tauri/vendor/README.md) for provenance, tests and the
+conditions for removing it. Existing installed builds need an updated release
+to receive this fix.
+
 **A YouTube import fails with a bare exit status and no detail** — `yt-dlp` is
 out of date. It breaks periodically as YouTube changes; this is normal and
 expected maintenance, not a bug in the app.
