@@ -1,6 +1,6 @@
 [package]
 name = "music-ai-player"
-version = "0.1.15"
+version = "0.1.16"
 edition = "2021"
 rust-version = "1.77.2"
 license = "MIT"
@@ -40,7 +40,7 @@ zbus = "5"
 serde = { version = "1", features = ["derive"] }
 # yt-dlp reports each item as a one-line JSON object on stdout; see youtube.rs.
 serde_json = "1"
-rusqlite = { version = "0.40", features = ["bundled"] }
+rusqlite = { version = "0.41", features = ["bundled"] }
 
 # The loopback media server in `stream.rs`. Both of these are already in the
 # tree as transitive dependencies of Tauri's own HTTP stack, so naming them here

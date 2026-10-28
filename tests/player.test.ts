@@ -11,6 +11,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { flush, install, makeTrack } from "./harness.ts";
+import { ShuffleBag } from "../src/audio/shuffle.ts";
 
 /** Play the given list in order, then stop. */
 function playInOrder(player, tracks) {
@@ -600,4 +601,32 @@ test("a track that ends with nothing queued stops the player", async (t) => {
 
   assert.equal(player.currentTrack, null);
   assert.deepEqual(harness.last("statechange"), { playing: false });
+});
+
+/* --- m8: a skip plays the track the transport announced -------------------- */
+
+test("m8: skip plays the queued track, so a shuffle cycle loses no draw", async (t) => {
+  const harness = install();
+  t.after(() => harness.dispose());
+  const { player } = harness;
+
+  const library = Array.from({ length: 6 }, (_, i) => makeTrack(i + 1));
+  const bag = new ShuffleBag();
+  bag.setLibrary(library);
+  player.setNextSelector((current) => bag.next(current));
+
+  const first = bag.next(null);
+  assert.ok(first !== null);
+  await player.play(first);
+  await flush();
+
+  const played = [first.id];
+  for (let i = 0; i < 5; i += 1) {
+    const announced = player.queuedTrack?.id;
+    await player.skip();
+    await flush();
+    assert.equal(player.currentTrack?.id, announced, "skip plays what Next said");
+    played.push(player.currentTrack?.id ?? -1);
+  }
+  assert.equal(new Set(played).size, 6, "six skips through six tracks hear all six");
 });

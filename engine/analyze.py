@@ -190,11 +190,16 @@ def measure(path: str, start: float) -> dict | None:
     # Keep the TWO strongest lags rather than one. Half/double-time ambiguity
     # is real and common; showing both candidates is honest, silently picking
     # one is how you end up chasing a tempo the track does not have.
-    lo_lag, hi_lag = int(fps * 60 / 200), int(fps * 60 / 60)   # 60-200 BPM
+    lo_lag = int(np.ceil(fps * 60 / 200))                     # 200 BPM
+    hi_lag = int(fps * 60 / 60) + 1                           # 60 BPM
     seg = ac[lo_lag:hi_lag]
     peaks: list[tuple[int, float]] = []
     if len(seg):
-        for i in sorted(np.argsort(seg)[::-1][:40]):
+        # Strongest first, so the suppression window drops the weaker of two
+        # neighbouring lags. Walking them in lag order instead keeps whichever
+        # comes first, and the "tempo" becomes a property of the window
+        # spacing rather than of the audio.
+        for i in np.argsort(seg)[::-1]:
             lag = int(i) + lo_lag
             if all(abs(lag - p) > fps * 0.15 for p, _ in peaks):
                 peaks.append((lag, float(seg[i])))

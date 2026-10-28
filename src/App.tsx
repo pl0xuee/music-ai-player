@@ -15,6 +15,7 @@ import { YouTubePanel } from "./components/YouTubePanel";
 import { CROSSFADE_SECONDS, Player } from "./audio/player";
 import type { DeckId, PlayerCrossfade } from "./audio/player";
 import { ShuffleBag } from "./audio/shuffle";
+import { nextInPlaylist } from "./queue";
 
 import {
   EVENTS,
@@ -153,7 +154,13 @@ export default function App() {
   // handing the player a row it already knows is dead. Cleared on every library
   // reload, so a drive that comes back is not remembered as broken.
   const deadRef = useRef<Set<number>>(new Set());
+  // Which playlist `items` was loaded for, and which one the playlist queue is
+  // walking. Browsing to another playlist must not change what plays after
+  // this track; an edit to the playlist that is playing must.
+  const itemsOwnerRef = useRef<number | null>(null);
+  const queuedPlaylistRef = useRef<number | null>(null);
   useEffect(() => {
+    if (queueMode === "playlist" && itemsOwnerRef.current !== queuedPlaylistRef.current) return;
     queueRef.current = { mode: queueMode, items };
   });
 
@@ -299,13 +306,16 @@ export default function App() {
 
   useEffect(() => {
     if (playlistId === null) {
+      itemsOwnerRef.current = null;
       setItems([]);
       return;
     }
     let cancelled = false;
     void listPlaylistItems(playlistId)
       .then((rows) => {
-        if (!cancelled) setItems(rows);
+        if (cancelled) return;
+        itemsOwnerRef.current = playlistId;
+        setItems(rows);
       })
       .catch((err: unknown) => {
         if (!cancelled) setNotice(describe(err));
@@ -344,6 +354,7 @@ export default function App() {
   const playFrom = useCallback(
     (track: Track, mode: "shuffle" | "playlist") => {
       setQueueMode(mode);
+      queuedPlaylistRef.current = mode === "playlist" ? itemsOwnerRef.current : null;
       queueRef.current = { mode, items };
       playTrack(track);
     },
@@ -417,17 +428,23 @@ export default function App() {
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent): void => {
+      // A control that handled the key itself (the pickers move their
+      // highlight on the arrows and open on Space) has the last word, and a
+      // chord like Ctrl+Arrow belongs to the webview, not the transport.
+      if (event.defaultPrevented) return;
+      if (event.ctrlKey || event.altKey || event.metaKey) return;
       const target = event.target;
       // Don't steal keys from the sliders, the genre picker or the generator
       // drawer, where Space belongs to whatever button has focus.
       if (target instanceof HTMLElement) {
         if (/INPUT|SELECT|TEXTAREA/.test(target.tagName)) return;
-        if (target.closest(".genpanel") !== null) return;
+        if (target.closest(".genpanel, .picker") !== null) return;
       }
 
       if (event.code === "Space") {
         event.preventDefault();
-        handleToggle();
+        // Held down, Space would toggle on every auto-repeat.
+        if (!event.repeat) handleToggle();
       } else if (event.code === "ArrowRight") {
         event.preventDefault();
         handleSkip();
@@ -759,6 +776,7 @@ export default function App() {
         playing={playing}
         canPlay={library.length > 0}
         onToggle={handleToggle}
+        onPrevious={handlePrevious}
         onSkip={handleSkip}
         volume={volume}
         onVolume={handleVolume}
@@ -879,33 +897,6 @@ function EmptyLibrary({
       </span>
     </section>
   );
-}
-
-/**
- * The track after `current` in the playlist, wrapping at the end.
- *
- * Rows whose file has gone missing are stepped over rather than handed to the
- * player — both the ones the database never had a path for and the ones the
- * resolver has since failed on, which the column cannot tell us about. A
- * `current` that is not in this playlist at all starts it from the top, which
- * is what happens when the user was shuffling and then clicks a playlist row.
- *
- * Returns null when the playlist has nothing playable *left*, which stops the
- * player rather than looping on a dead entry — and that includes a playlist
- * whose only playable entry is the one already playing: handing that back
- * would load the same file onto both decks and crossfade it into itself.
- */
-function nextInPlaylist(
-  items: PlaylistItem[],
-  current: Track | null,
-  dead: ReadonlySet<number>,
-): PlaylistItem | null {
-  const playable = items.filter((item) => item.path !== null && !dead.has(item.id));
-  if (playable.length === 0) return null;
-
-  const at = current === null ? -1 : playable.findIndex((item) => item.id === current.id);
-  const next = playable[(at + 1) % playable.length] ?? null;
-  return next !== null && next.id === current?.id ? null : next;
 }
 
 function describe(err: unknown): string {

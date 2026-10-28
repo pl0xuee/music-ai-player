@@ -86,17 +86,19 @@ pub fn scan_local(
     // Committed in batches rather than per row. SQLite gives every unwrapped
     // INSERT its own transaction, and therefore its own fsync: adopting a real
     // music collection of several thousand files that way takes minutes of
-    // pure disk sync. Batching keeps the write lock short enough that the
-    // generator can still get in between batches, and means an interrupted
-    // scan keeps everything up to the last commit rather than nothing.
+    // pure disk sync. An interrupted scan keeps everything up to the last
+    // commit rather than nothing.
+    //
+    // Each batch is probed first and written second. Holding a transaction
+    // across the probes would keep the write lock through up to BATCH ffprobe
+    // runs — seconds locally, far longer off a share — and every other writer
+    // (a play count, a rating, a finished download, the generator) would time
+    // out behind it. A deferred `BEGIN` would be worse still: its first read
+    // pins a snapshot, so any commit from elsewhere before its first insert
+    // fails the rest of the batch outright with "database is locked". The
+    // writes go in under `BEGIN IMMEDIATE`, which takes the lock up front and
+    // waits its turn for it like everyone else.
     const BATCH: usize = 200;
-    let mut open_batch = false;
-    let begin = |conn: &rusqlite::Connection| -> Result<(), String> {
-        conn.execute_batch("BEGIN").map_err(|e| e.to_string())
-    };
-    let commit = |conn: &rusqlite::Connection| -> Result<(), String> {
-        conn.execute_batch("COMMIT").map_err(|e| e.to_string())
-    };
 
     let mut report = ScanReport {
         added: 0,
@@ -106,75 +108,73 @@ pub fn scan_local(
         truncated,
         errors: Vec::new(),
     };
-
-    for (done, file) in files.iter().enumerate() {
-        if !open_batch {
-            begin(&conn)?;
-            open_batch = true;
+    let fail = |report: &mut ScanReport, err: String| {
+        report.failed += 1;
+        if report.errors.len() < 5 {
+            report.errors.push(err);
         }
-        let _ = app.emit(
-            EV_PROGRESS,
-            ScanProgress {
-                done,
-                total,
-                current: file_label(file),
-            },
-        );
+    };
 
-        let path = file.to_string_lossy().into_owned();
-        // No `continue` anywhere in here: it would jump the batch check at the
-        // bottom, and a scan that is mostly files already held would then keep
-        // one transaction open from beginning to end — the exact lock the
-        // batching exists to avoid.
-        match find_by_path(&conn, &path)? {
-            Some((id, title)) if needs_retitle(file, &title) => {
-                match probe(file) {
+    enum Write {
+        Insert(LocalTrack),
+        Update(i64, LocalTrack),
+    }
+
+    for (batch_no, batch) in files.chunks(BATCH).enumerate() {
+        let mut writes = Vec::new();
+        for (offset, file) in batch.iter().enumerate() {
+            let _ = app.emit(
+                EV_PROGRESS,
+                ScanProgress {
+                    done: batch_no * BATCH + offset,
+                    total,
+                    current: file_label(file),
+                },
+            );
+
+            // The row stores the path as text, and a name that is not UTF-8
+            // would be stored lossily — a row whose path names no file, which
+            // never plays and which the next Refresh prunes again.
+            let Some(path) = file.to_str() else {
+                fail(&mut report, format!("{}: file name is not UTF-8", file_label(file)));
+                continue;
+            };
+            match find_by_path(&conn, path)? {
+                Some((id, title)) if needs_retitle(file, &title) => match probe(file) {
                     // Leave the row exactly as it is. A file that would not
                     // probe this time is a network share gone quiet, not a
                     // reason to throw away the only title the row has.
                     None => report.skipped += 1,
-                    Some(found) => match update_local_meta(&conn, id, &found) {
-                        Ok(()) => report.updated += 1,
-                        Err(err) => {
-                            report.failed += 1;
-                            if report.errors.len() < 5 {
-                                report.errors.push(err);
-                            }
-                        }
-                    },
-                }
-            }
-            Some(_) => report.skipped += 1,
-            None => match probe(file) {
-                // No duration means ffprobe found no audio stream, which is the
-                // difference between a file named `.mp3` and a file that is one.
-                // A ready row pointing at the former stalls a deck.
-                None => {
-                    report.failed += 1;
-                    if report.errors.len() < 5 {
-                        report.errors.push(format!("no audio in {}", file_label(file)));
-                    }
-                }
-                Some(found) => match insert_local(&conn, &found) {
-                    Ok(_) => report.added += 1,
-                    Err(err) => {
-                        report.failed += 1;
-                        if report.errors.len() < 5 {
-                            report.errors.push(err);
-                        }
-                    }
+                    Some(found) => writes.push(Write::Update(id, found)),
                 },
-            },
+                Some(_) => report.skipped += 1,
+                // No duration means ffprobe found no audio stream, which is the
+                // difference between a file named `.mp3` and a file that is
+                // one. A ready row pointing at the former stalls a deck.
+                None => match probe(file) {
+                    None => fail(&mut report, format!("no audio in {}", file_label(file))),
+                    Some(found) => writes.push(Write::Insert(found)),
+                },
+            }
         }
 
-        if (done + 1) % BATCH == 0 {
-            commit(&conn)?;
-            open_batch = false;
+        if writes.is_empty() {
+            continue;
         }
-    }
-
-    if open_batch {
-        commit(&conn)?;
+        conn.execute_batch("BEGIN IMMEDIATE").map_err(|e| e.to_string())?;
+        for write in &writes {
+            match write {
+                Write::Insert(found) => match insert_local(&conn, found) {
+                    Ok(_) => report.added += 1,
+                    Err(err) => fail(&mut report, err),
+                },
+                Write::Update(id, found) => match update_local_meta(&conn, *id, found) {
+                    Ok(()) => report.updated += 1,
+                    Err(err) => fail(&mut report, err),
+                },
+            }
+        }
+        conn.execute_batch("COMMIT").map_err(|e| e.to_string())?;
     }
 
     let _ = app.emit(
@@ -243,7 +243,16 @@ fn walk(
     // `symlink_metadata` rather than `metadata`: a symlink pointing back up its
     // own tree would otherwise be followed until the depth cap, adding every
     // file under it again on the way.
-    let Ok(meta) = std::fs::symlink_metadata(path) else {
+    //
+    // The folder the user actually picked is the exception: `~/Music` is often
+    // itself a link to a share, and skipping it would scan nothing and say so
+    // only as "added 0".
+    let meta = if depth == 0 {
+        std::fs::metadata(path)
+    } else {
+        std::fs::symlink_metadata(path)
+    };
+    let Ok(meta) = meta else {
         return;
     };
     if meta.file_type().is_symlink() {

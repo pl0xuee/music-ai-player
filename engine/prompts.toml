@@ -31,13 +31,18 @@
 #
 # Two fixes, both verified by re-measuring:
 #   1. bpm ranges now straddle the measured 78/99 pair.
+#      CAUTION: both tempo rows above came from a tempo detector that, until
+#      0.1.16, could only ever report lags 12/19/26/33/40 (≈215/136/99/78/65
+#      BPM) whatever the audio was. They are artefacts, not measurements.
+#      Re-measure the reference with the fixed analyze.py before moving any
+#      bpm range on their account. The spectral rows are unaffected.
 #   2. The octave and brightness gaps are corrected DETERMINISTICALLY by the
 #      mastering chain in generate.py (MASTER_CHAIN), not by asking the model
 #      for "infrasonic sub-bass" and hoping. After mastering: centroid 1708 Hz,
 #      flatness 0.376, worst octave gap 6.5 dB -> 3.9 dB.
 #
 # Re-measure after any change:
-#   venv_rocm/bin/python scratchpad/analyze2.py <reference.mp3> <our_dir>/
+#   ./engine/analyze.py <reference.mp3> <our_dir>/
 #
 # ---- WHY THIS IS PROSE, NOT TAGS ---------------------------------------------
 # ACE-Step was trained on rich prose captions (see examples/text2music/).
@@ -60,6 +65,10 @@
 # ==============================================================================
 
 [defaults]
+# generate.py reads `audio_duration` and `model` from here. `audio_format`,
+# `seed` and `lyrics` are fixed in generate.py for the reasons given beside
+# them; they are listed so the bank says what a track is, but editing them
+# changes nothing.
 # NOT opus: torchaudio 2.10 delegates encoding to torchcodec (not installed)
 # and the soundfile fallback can't write an OPUS container, so the render
 # succeeds but the file write fails silently. mp3 is ~3.2 MB per 200 s track.

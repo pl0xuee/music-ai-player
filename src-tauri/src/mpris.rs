@@ -65,15 +65,6 @@ pub struct Mpris {
     connection: Mutex<Option<zbus::Connection>>,
 }
 
-impl Mpris {
-    fn snapshot(&self) -> NowPlaying {
-        self.state
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone()
-    }
-}
-
 // ---------------------------------------------------------------------------
 // org.mpris.MediaPlayer2
 // ---------------------------------------------------------------------------

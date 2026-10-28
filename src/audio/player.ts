@@ -501,6 +501,10 @@ export class Player {
     this.unlock();
     const url = await this.resolveUrl(track);
     if (token !== this.preloadToken) return "superseded";
+    // The ticker kept running through that await, and if the outgoing track
+    // crossed its fade point meanwhile a fresh handover has started — one that
+    // would fade the track being loaded here down to silence and then stop.
+    this.cancelFade();
     if (url === null) {
       this.emit("error", { message: `No audio file for "${track.title}".` });
       // Nothing new started, so say what is true now. Without this the button
@@ -886,7 +890,13 @@ export class Player {
    */
   private async advance(): Promise<void> {
     const tried = new Set<number>();
-    let candidate = this.selectNext(this.currentTrack);
+    // The track already armed on the idle deck is the one the transport has
+    // been announcing as next, and in shuffle it has already been drawn from
+    // the bag. Asking the selector afresh would play something else and leave
+    // that draw unheard for the rest of the cycle — on every skip, and on
+    // every change at all with the crossfade turned off.
+    const idle = this.decks[this.idle];
+    let candidate = idle.armed && idle.track !== null ? idle.track : this.selectNext(this.currentTrack);
 
     while (candidate !== null && tried.size < ADVANCE_ATTEMPTS) {
       if (tried.has(candidate.id)) break;

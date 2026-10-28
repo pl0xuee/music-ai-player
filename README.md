@@ -328,10 +328,10 @@ succeeds, which is why the app cannot simply report failure; it warns instead.
 Some desktops (GNOME's own media handler, another player that registered first)
 also claim the keys before the app can. The tray menu always works.
 
-**`engine/smoke-test.sh` fails to download** — it still requests
-`"audio_format": "opus"`, which cannot be written on this install (see above), so
-it dies at the download step. Use `./engine/generate.py --tracks 1` as the
-end-to-end check instead.
+**`engine/smoke-test.sh` fails to download** — fixed in 0.1.16 (it was encoding
+the download URL twice). `./engine/generate.py --tracks 1` is still the fuller
+end-to-end check, because it also masters the track and records it in the
+library.
 
 ---
 

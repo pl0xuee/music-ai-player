@@ -679,6 +679,26 @@ pub struct PruneReport {
     pub removed: usize,
 }
 
+/// Whether a track's file has positively left, as opposed to being out of
+/// reach for the moment.
+///
+/// Pruning cannot be undone — it takes the playlist entries with it — so only
+/// a definite "no such file" counts. A share that has dropped answers EIO,
+/// ENOTCONN or a timeout, an unreadable file answers EACCES, and none of those
+/// say the file is gone. A missing *folder* is treated the same way: that is
+/// what an unmounted disk or share looks like from here, and a folder deleted
+/// on purpose costs only a row that will not play until the next Refresh after
+/// it is noticed.
+fn is_gone(path: &Path) -> bool {
+    match std::fs::metadata(path) {
+        Ok(meta) => !meta.is_file(),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            path.parent().is_some_and(Path::is_dir)
+        }
+        Err(_) => false,
+    }
+}
+
 /// Drop every ready row whose audio file is no longer on disk.
 ///
 /// Files leave without the library being told: a scanned folder is tidied, an
@@ -714,7 +734,7 @@ pub fn prune_missing(lib: State<'_, Library>) -> Result<PruneReport, String> {
     let checked = rows.len();
     let gone: Vec<i64> = rows
         .into_iter()
-        .filter(|(_, path)| !Path::new(path).is_file())
+        .filter(|(_, path)| is_gone(Path::new(path)))
         .map(|(id, _)| id)
         .collect();
 
@@ -1075,7 +1095,11 @@ pub fn drop_item(conn: &Connection, item_id: i64) -> Result<(), String> {
 /// earlier interrupted write silently breaks it. A playlist is small enough that
 /// rewriting the column is the cheaper thing to get right.
 pub fn move_item(conn: &mut Connection, item_id: i64, new_position: i64) -> Result<(), String> {
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    // Immediate: this reads before it writes, and a deferred transaction that
+    // does that fails outright if anyone else commits in between.
+    let tx = conn
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
 
     let playlist_id: Option<i64> = tx
         .query_row(
@@ -1433,7 +1457,7 @@ fn apply_plan(conn: &Connection, planned: Vec<PlannedPlaylist>) -> Result<Curati
             .ok();
         let (playlist_id, is_new) = match existing {
             Some(id) => (id, false),
-            None => match new_playlist(&conn, &name) {
+            None => match new_playlist(conn, &name) {
                 Ok(id) => (id, true),
                 Err(err) => {
                     report.errors.push(err);
@@ -1448,7 +1472,7 @@ fn apply_plan(conn: &Connection, planned: Vec<PlannedPlaylist>) -> Result<Curati
                 report.unknown_ids += 1;
                 continue;
             }
-            match append_to_playlist(&conn, playlist_id, track_id) {
+            match append_to_playlist(conn, playlist_id, track_id) {
                 Ok(true) => {
                     report.added += 1;
                     touched += 1;
@@ -1492,6 +1516,25 @@ mod tests {
         ));
         let _ = std::fs::remove_dir_all(&root);
         root
+    }
+
+    /// Pruning deletes playlist entries with the row, so only a file that is
+    /// definitely gone may count — never one whose whole folder has vanished,
+    /// which is what an unmounted share looks like.
+    #[test]
+    fn only_a_file_missing_from_a_folder_that_is_there_counts_as_gone() {
+        let root = temp_root("gone");
+        std::fs::create_dir_all(&root).unwrap();
+        let present = root.join("present.mp3");
+        std::fs::write(&present, b"x").unwrap();
+
+        assert!(!is_gone(&present));
+        assert!(is_gone(&root.join("deleted.mp3")));
+        assert!(!is_gone(&root.join("unmounted").join("track.mp3")));
+        // A folder where the file used to be is not a track either.
+        assert!(is_gone(&root));
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     fn temp_lib(tag: &str) -> TempLib {

@@ -156,8 +156,17 @@ fn accept_loop(listener: &TcpListener, routes: &Arc<Routes>, live: &Arc<AtomicUs
         let spawned = std::thread::Builder::new()
             .name("media-conn".into())
             .spawn(move || {
+                // Released on drop, so a panic while serving cannot leak the
+                // slot and, two dozen panics later, turn every request into a
+                // 503.
+                struct Slot(Arc<AtomicUsize>);
+                impl Drop for Slot {
+                    fn drop(&mut self) {
+                        self.0.fetch_sub(1, Ordering::Relaxed);
+                    }
+                }
+                let _slot = Slot(held);
                 serve(stream, &routes);
-                held.fetch_sub(1, Ordering::Relaxed);
             });
         // Nothing is going to decrement the count if the thread never started.
         if spawned.is_err() {
@@ -323,6 +332,10 @@ fn resolve_range(range: Option<&str>, len: u64) -> Result<Option<HttpRange>, ()>
         return Ok(None);
     };
     match HttpRange::parse(range, len) {
+        // http-range answers a suffix range on an empty file with a range of
+        // length zero rather than an error. There is no last byte to name in
+        // `Content-Range`, so it is unsatisfiable, which is what RFC 7233 says.
+        Ok(ranges) if ranges.first().is_some_and(|r| r.length == 0) => Err(()),
         Ok(ranges) => Ok(ranges.first().copied()),
         Err(HttpRangeParseError::NoOverlap) => Err(()),
         Err(HttpRangeParseError::InvalidRange) => Ok(None),
@@ -802,6 +815,15 @@ mod tests {
         assert_eq!(res.status, 416);
         assert_eq!(res.header("Content-Range"), Some("bytes */1000"));
         drop(temp);
+    }
+
+    /// http-range hands back a zero-length range here rather than an error,
+    /// and naming its last byte used to underflow.
+    #[test]
+    fn a_suffix_range_on_an_empty_file_is_unsatisfiable() {
+        assert!(resolve_range(Some("bytes=-500"), 0).is_err());
+        assert!(resolve_range(Some("bytes=0-"), 0).is_err());
+        assert!(resolve_range(None, 0).unwrap().is_none());
     }
 
     #[test]

@@ -685,6 +685,10 @@ pub struct Inner {
     /// single slot makes "cancel" and "clean up partials" unambiguous.
     active: Slot,
     active_job: Mutex<Option<Active>>,
+    /// The scratch directory of the job in flight. It sits inside that job's
+    /// destination, which is not always the library, so the sweeps after the
+    /// job and at exit need telling where it was.
+    scratch: Mutex<Option<PathBuf>>,
     next_id: AtomicU64,
     /// Test hook: forces the binary instead of resolving one from `PATH`.
     ytdlp_override: Option<PathBuf>,
@@ -721,6 +725,7 @@ impl Downloads {
             wake: Condvar::new(),
             active: slot(),
             active_job: Mutex::new(None),
+            scratch: Mutex::new(None),
             next_id: AtomicU64::new(1),
             ytdlp_override,
         }))
@@ -985,11 +990,25 @@ impl Downloads {
         }
         self.wake.notify_all();
         terminate(&self.active, proc::SIGTERM, Duration::from_secs(3));
-        clear_dir(&self.incoming_dir());
+        self.sweep_scratch();
     }
 
     fn incoming_dir(&self) -> PathBuf {
         self.lib.tracks_dir().join(INCOMING_DIRNAME)
+    }
+
+    /// Empty the library's scratch directory and the last job's, wherever that
+    /// was. A chosen folder — possibly a share — gets its `.incoming` removed
+    /// outright, so neither a partial file nor `archive.txt`, which lists every
+    /// video in the library, is left behind in it.
+    fn sweep_scratch(&self) {
+        let library = self.incoming_dir();
+        clear_dir(&library);
+        let elsewhere = self.scratch.lock().unwrap_or_else(|e| e.into_inner()).take();
+        if let Some(dir) = elsewhere.filter(|dir| *dir != library) {
+            clear_dir(&dir);
+            let _ = std::fs::remove_dir(&dir);
+        }
     }
 
     // -- the worker ---------------------------------------------------------
@@ -1066,7 +1085,7 @@ impl Downloads {
         }
 
         // Whatever happened, nothing half-written may survive into `tracks/`.
-        clear_dir(&self.incoming_dir());
+        self.sweep_scratch();
         *self.active_job.lock().unwrap_or_else(|e| e.into_inner()) = None;
         self.publish(app);
     }
@@ -1113,6 +1132,7 @@ impl Downloads {
         std::fs::create_dir_all(&incoming)
             .map_err(|e| format!("cannot create {}: {e}", incoming.display()))?;
         clear_dir(&incoming);
+        *self.scratch.lock().unwrap_or_else(|e| e.into_inner()) = Some(incoming.clone());
 
         // The archive is rebuilt from the database every run rather than kept
         // as a file, so the library stays the single source of truth. It is what
@@ -1265,7 +1285,14 @@ impl Downloads {
                     match serde_json::from_str::<Meta>(json) {
                         Ok(meta) => {
                             let title = meta.title();
+                            // The entry before this one never produced its
+                            // FILE line, so it errored mid-playlist. Without
+                            // this, only the last such entry is ever counted.
+                            let abandoned = pending.is_some();
                             self.with_job(job_id, |job| {
+                                if abandoned {
+                                    job.failed += 1;
+                                }
                                 job.label = title.clone();
                                 job.detail = "downloading…".into();
                                 job.percent = 0.0;
@@ -1433,7 +1460,15 @@ impl Downloads {
     fn record(&self, meta: &Meta, file: &Path, playlist_id: Option<i64>) -> Result<i64, String> {
         let duration = probe_duration(file).or(meta.duration);
         let mut conn = self.lib.connect()?;
-        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        // Immediate, because the lookup below reads before anything is
+        // written. A deferred transaction pins its snapshot at that read, and
+        // if any other connection commits before the insert — a play count, a
+        // generator row — the upgrade to a write fails at once with "database
+        // is locked", busy timeout or not. A failure here deletes the finished
+        // download.
+        let tx = conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(|e| e.to_string())?;
 
         // Belt to the archive's braces: if the row somehow already exists, add
         // it to the playlist rather than creating a second row for one file.

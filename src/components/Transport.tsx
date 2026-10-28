@@ -7,6 +7,7 @@ interface Props {
   playing: boolean;
   canPlay: boolean;
   onToggle: () => void;
+  onPrevious: () => void;
   onSkip: () => void;
   volume: number;
   onVolume: (level: number) => void;
@@ -33,6 +34,7 @@ export function Transport(props: Props) {
     playing,
     canPlay,
     onToggle,
+    onPrevious,
     onSkip,
     volume,
     onVolume,
@@ -52,6 +54,19 @@ export function Transport(props: Props) {
   return (
     <footer className={playing ? "dock is-playing" : "dock"} aria-label="Transport">
       <div className="dock-group">
+        <button
+          type="button"
+          className="step"
+          onClick={onPrevious}
+          disabled={!canPlay || current === null}
+          aria-label="Restart, or back to the previous track"
+          title="Restart · press again for the previous track"
+        >
+          <svg viewBox="0 0 16 16" aria-hidden="true">
+            <path d="M13 3.2v9.6a.5.5 0 0 1-.77.42L5 8.42a.5.5 0 0 1 0-.84l7.23-4.8A.5.5 0 0 1 13 3.2Z" />
+            <rect x="2.4" y="3" width="2" height="10" rx="1" />
+          </svg>
+        </button>
         <button
           type="button"
           className="play"

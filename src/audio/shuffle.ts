@@ -35,6 +35,8 @@ export class ShuffleBag {
   /** Eligible ids for the active genre, excluding buried tracks. */
   private eligible: number[] = [];
   private bag: number[] = [];
+  /** Ids drawn (or played by hand) since the bag was last refilled. */
+  private drawn = new Set<number>();
   private history: number[] = [];
 
   constructor(config: Partial<ShuffleConfig> = {}) {
@@ -78,6 +80,7 @@ export class ShuffleBag {
   /** Register a track the user picked by hand so shuffle does not repeat it. */
   markPlayed(id: number): void {
     this.bag = this.bag.filter((candidate) => candidate !== id);
+    this.drawn.add(id);
     this.history.push(id);
     if (this.history.length > this.config.historyDepth) {
       this.history = this.history.slice(-this.config.historyDepth);
@@ -113,12 +116,20 @@ export class ShuffleBag {
       .map((track) => track.id);
 
     const eligibleSet = new Set(this.eligible);
-    // Keep the cycle's progress: only drop ids the filters just excluded.
+    // Keep the cycle's progress: drop ids the filters just excluded, and add
+    // the ones they just let in — a widened genre, an un-buried track, a fresh
+    // download — unless this cycle has already played them. Only dropping
+    // would leave those out until the whole cycle ran dry.
     this.bag = this.bag.filter((id) => eligibleSet.has(id));
+    const held = new Set(this.bag);
+    for (const id of this.eligible) {
+      if (!held.has(id) && !this.drawn.has(id)) this.bag.push(id);
+    }
     if (this.bag.length === 0) this.refill();
   }
 
   private refill(): void {
+    this.drawn.clear();
     this.bag = shuffled(this.eligible);
   }
 

@@ -154,3 +154,28 @@ test("a buried track leaves circulation", (t) => {
   }
   assert.equal(bag.size, 2);
 });
+
+test("tracks let back in by a filter join the cycle in progress", () => {
+  const restore = seedRandom(7);
+  try {
+    const rock = Array.from({ length: 10 }, (_, i) => makeTrack(i + 1, { genre: "rock" }));
+    const jazz = Array.from({ length: 30 }, (_, i) => makeTrack(100 + i, { genre: "jazz" }));
+    const bag = new ShuffleBag();
+    bag.setLibrary([...rock, ...jazz]);
+
+    bag.setGenre("rock");
+    const heard = [bag.next(null)?.id, bag.next(null)?.id];
+    bag.setGenre("all");
+
+    assert.equal(bag.size, 40);
+    assert.equal(bag.remaining, 38, "everything but the two already heard");
+    const next = Array.from({ length: 38 }, () => bag.next(null)?.id);
+    assert.equal(new Set([...heard, ...next]).size, 40, "the widened cycle plays every track once");
+
+    // A track that arrives mid-cycle is in it, not parked until the next one.
+    bag.setLibrary([...rock, ...jazz, makeTrack(999, { genre: "jazz" })]);
+    assert.equal(bag.next(null)?.id, 999);
+  } finally {
+    restore();
+  }
+});

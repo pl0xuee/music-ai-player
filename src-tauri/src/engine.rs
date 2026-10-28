@@ -28,7 +28,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, Runtime, State};
+use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 
 // Every call site here reads `proc::SIGINT` / `proc::group_of`; aliasing the
 // signals submodule keeps them saying exactly that after the move.
@@ -818,6 +818,18 @@ impl Engine {
                     .iter()
                     .flat_map(|name| ["--genre".to_string(), name.clone()]),
             )
+            // The library this app is showing, which is not necessarily the
+            // generator's default of `<engine>/../library`: `MUSIC_AI_LIBRARY`,
+            // or an installed copy using the user data directory, would
+            // otherwise have the tracks land somewhere the player never looks.
+            .args(app.try_state::<crate::library::Library>().into_iter().flat_map(|lib| {
+                [
+                    "--db".into(),
+                    lib.db_path().as_os_str().to_owned(),
+                    "--out".into(),
+                    lib.tracks_dir().into_os_string(),
+                ]
+            }))
             .env("PYTHONUNBUFFERED", "1")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -1051,7 +1063,9 @@ pub fn generation_state(engine: State<'_, Engine>) -> GenerationProgress {
     engine.progress()
 }
 
-#[tauri::command]
+// Off the main thread: it probes the engine's health first, which can take up
+// to a second and a half and would freeze the window while it did.
+#[tauri::command(async)]
 pub fn generation_start(
     app: AppHandle,
     engine: State<'_, Engine>,

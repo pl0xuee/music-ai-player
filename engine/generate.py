@@ -162,7 +162,11 @@ def master(src: Path) -> bool:
         r = subprocess.run(
             ["ffmpeg", "-v", "error", "-i", str(src), "-af", MASTER_CHAIN,
              "-b:a", "128k", "-y", str(tmp)],
-            capture_output=True, timeout=300)
+            # Its own session, so a Ctrl-C (or the app's cancel, which signals
+            # the whole process group) lets the in-flight track finish
+            # mastering instead of killing ffmpeg and filing the raw render
+            # as ready.
+            capture_output=True, timeout=300, start_new_session=True)
     except Exception as e:
         warn(f"mastering failed for {src.name}: {e}")
         tmp.unlink(missing_ok=True)
@@ -187,7 +191,9 @@ def download(file_url: str, dest: Path) -> bool:
         warn(f"empty download for {file_url[:80]}")
         return False
     dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_bytes(data)
+    tmp = dest.with_suffix(dest.suffix + ".part")
+    tmp.write_bytes(data)
+    tmp.replace(dest)
     return True
 
 
@@ -226,6 +232,8 @@ class Bank:
         # after an hour of GPU time.
         if only:
             wanted = {name.strip().lower() for name in only if name.strip()}
+            if not wanted:
+                die("--genre was given without a genre name")
             known = {g["name"].lower(): g["name"] for g in self.genres}
             missing = sorted(wanted - known.keys())
             if missing:
@@ -246,13 +254,20 @@ class Bank:
         """
         weights = [g.get("weight", 1) for g in self.genres]
         total = sum(weights)
-        counts = [max(1, round(n_prompts * w / total)) for w in weights]
+        exact = [n_prompts * w / total for w in weights]
+        counts = [math.floor(x) for x in exact]
 
-        # Correct rounding drift against the exact target.
-        while sum(counts) > n_prompts:
-            counts[counts.index(max(counts))] -= 1
-        while sum(counts) < n_prompts:
-            counts[counts.index(min(counts))] += 1
+        # The seats the floors leave over go out at random, weighted by each
+        # genre's remainder. A big run still lands on the bank's proportions to
+        # within one track per genre, and a small one is a fair draw — rounding
+        # them deterministically instead would make `--tracks 1` the same
+        # genre every time.
+        remainders = [x - c for x, c in zip(exact, counts)]
+        for _ in range(n_prompts - sum(counts)):
+            pool = remainders if any(remainders) else weights
+            i = random.choices(range(len(counts)), weights=pool)[0]
+            counts[i] += 1
+            remainders[i] = 0.0
 
         out: list[dict] = []
         for genre, count in zip(self.genres, counts):
@@ -465,6 +480,11 @@ def submit(plan_row: sqlite3.Row, duration: int, batch: int, model: str) -> str 
     return data.get("task_id") or data.get("taskId")
 
 
+# A submit that fails while the engine is still answering gets this many tries
+# before the prompt is marked failed.
+SUBMIT_ATTEMPTS = 3
+
+
 def wait_for(task_id: str) -> tuple[int, list[str]]:
     """Poll until the task settles. Returns (status, audio_paths)."""
     deadline = time.time() + POLL_TIMEOUT
@@ -498,26 +518,45 @@ def wait_for(task_id: str) -> tuple[int, list[str]]:
 
 def run(args: argparse.Namespace) -> int:
     db = open_db(Path(args.db))
-    out_dir = Path(args.out)
+    # Absolute, because the path goes into the database as written and the
+    # player resolves it from its own working directory, not this one.
+    out_dir = Path(args.out).resolve()
     bank = Bank(BANK_PATH, args.genre)
 
     duration = args.duration or bank.defaults.get("audio_duration", 200)
     model = args.model or bank.defaults.get("model", "acestep-v15-turbo")
 
     # ---- decide the work list ------------------------------------------------
+    # A row left 'generating' belongs to a run that died mid-flight (a second
+    # Ctrl-C, a SIGKILL, a crash). Only one run drives the library at a time,
+    # so whichever run starts next reclaims it, not just --resume.
+    db.execute("UPDATE tracks SET status='pending', task_id=NULL "
+               "WHERE status='generating'")
+    db.commit()
+
+    # --genre narrows the leftovers as well as the new plan, so a run told to
+    # make one style never spends the GPU on another.
+    genre_names = [g["name"] for g in bank.genres] if args.genre else []
+    genre_clause = (f" AND genre IN ({','.join('?' * len(genre_names))})"
+                    if genre_names else "")
+
     pending = db.execute(
-        "SELECT COUNT(*) n FROM tracks WHERE status IN ('pending','generating')"
+        "SELECT COUNT(*) n FROM tracks WHERE status='pending'" + genre_clause,
+        genre_names,
     ).fetchone()["n"]
 
+    if args.resume and not pending:
+        print("\n  Nothing pending — the last run finished. "
+              "Use --tracks N or --hours N to add more.\n")
+        return 0
+
+    # Before planning, so a run against a dead engine leaves no rows behind.
+    if not api_alive():
+        die(f"ACE-Step API not responding at {API}\n"
+            "  Start it first:  ./engine/start-api.sh\n"
+            "  (first run downloads model weights and takes a while)")
+
     if args.resume:
-        if not pending:
-            print("\n  Nothing pending — the last run finished. "
-                  "Use --tracks N or --hours N to add more.\n")
-            return 0
-        # A previous run died mid-flight; reclaim those rows.
-        db.execute("UPDATE tracks SET status='pending', task_id=NULL "
-                   "WHERE status='generating'")
-        db.commit()
         say(f"Resuming — {pending} track(s) still to generate")
     else:
         if args.hours:
@@ -549,14 +588,10 @@ def run(args: argparse.Namespace) -> int:
         for name, count in sorted(tally.items(), key=lambda x: -x[1]):
             print(f"    {name:<20} {count:>4} prompt(s)")
 
-    # ---- check the engine ----------------------------------------------------
-    if not api_alive():
-        die(f"ACE-Step API not responding at {API}\n"
-            "  Start it first:  ./engine/start-api.sh\n"
-            "  (first run downloads model weights and takes a while)")
-
     todo = db.execute(
-        "SELECT * FROM tracks WHERE status='pending' ORDER BY id"
+        "SELECT * FROM tracks WHERE status='pending'" + genre_clause
+        + " ORDER BY id",
+        genre_names,
     ).fetchall()
     if not todo:
         print("\n  Nothing to do.\n")
@@ -568,6 +603,7 @@ def run(args: argparse.Namespace) -> int:
 
     started = time.time()
     done = failed = produced = 0
+    engine_lost = False
 
     for i, row in enumerate(todo, 1):
         if _INTERRUPTED:
@@ -576,7 +612,20 @@ def run(args: argparse.Namespace) -> int:
         label = f"[{i}/{len(todo)}] {row['genre']:<18} {row['bpm']:>3}bpm"
         print(f"  {label}  {C.D}submitting…{C.X}", end="\r", flush=True)
 
-        task_id = submit(row, duration, args.batch_size, model)
+        task_id = None
+        for attempt in range(SUBMIT_ATTEMPTS):
+            task_id = submit(row, duration, args.batch_size, model)
+            if task_id or _INTERRUPTED or not api_alive():
+                break
+            time.sleep(5 * (attempt + 1))
+        if _INTERRUPTED:
+            break
+        if not task_id and not api_alive():
+            # The engine went away. That is not this prompt's fault: leave it
+            # pending for --resume instead of failing every row that remains.
+            engine_lost = True
+            print(f"  {label}  {C.R}engine stopped responding{C.X}")
+            break
         if not task_id:
             db.execute("UPDATE tracks SET status='failed', error='submit failed' "
                        "WHERE id=?", (row["id"],))
@@ -593,10 +642,13 @@ def run(args: argparse.Namespace) -> int:
         status, paths = wait_for(task_id)
         took = time.time() - t0
 
-        if _INTERRUPTED:
+        if _INTERRUPTED or (status == 0 and not api_alive()):
             db.execute("UPDATE tracks SET status='pending', task_id=NULL "
                        "WHERE id=?", (row["id"],))
             db.commit()
+            if not _INTERRUPTED:
+                engine_lost = True
+                print(f"  {label}  {C.R}engine stopped responding{C.X}")
             break
 
         if status != 1 or not paths:
@@ -611,6 +663,7 @@ def run(args: argparse.Namespace) -> int:
         # First variation updates this row; extras become sibling rows so a
         # batch_size of N yields N playable tracks.
         saved = 0
+        primary_saved = False
         for k, remote in enumerate(paths):
             title = row["title"] if k == 0 else f"{row['title']} {chr(65 + k)}"
             fname = f"{row['id']:05d}{'' if k == 0 else chr(97 + k)}-" \
@@ -621,6 +674,7 @@ def run(args: argparse.Namespace) -> int:
             master(dest)   # corrective EQ -- see MASTER_CHAIN for the measurements
             saved += 1
             if k == 0:
+                primary_saved = True
                 db.execute(
                     "UPDATE tracks SET status='ready', path=?, duration=? "
                     "WHERE id=?", (str(dest), float(duration), row["id"]))
@@ -632,7 +686,16 @@ def run(args: argparse.Namespace) -> int:
                     (title, row["genre"], row["bpm"], row["key_scale"],
                      row["prompt"], float(duration), str(dest), task_id,
                      now_iso()))
-        db.commit()
+            # Per file, so a run killed partway through a batch keeps the
+            # tracks it already has on disk.
+            db.commit()
+
+        if saved and not primary_saved:
+            # The siblings landed but this row's own file did not; without this
+            # it would sit at 'generating' forever.
+            db.execute("UPDATE tracks SET status='failed', error='download failed' "
+                       "WHERE id=?", (row["id"],))
+            db.commit()
 
         if not saved:
             db.execute("UPDATE tracks SET status='failed', error='download failed' "
@@ -654,6 +717,9 @@ def run(args: argparse.Namespace) -> int:
     if _INTERRUPTED:
         say("Interrupted — progress saved")
         print("  Continue with:  ./engine/generate.py --resume")
+    elif engine_lost:
+        say("Engine stopped responding — progress saved")
+        print("  Restart it, then:  ./engine/generate.py --resume")
     else:
         say("Run complete")
 
@@ -667,7 +733,7 @@ def run(args: argparse.Namespace) -> int:
               f"{fmt_hms(elapsed / produced * 432)}{C.X}")
     print()
     show_status(db)
-    return 1 if (failed and not done) else 0
+    return 1 if engine_lost or (failed and not done) else 0
 
 
 # ------------------------------------------------------------------------------

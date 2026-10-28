@@ -289,6 +289,12 @@ docstring records this so nobody adds it back.
 Two fixes, both verified by re-measuring:
 
 1. BPM ranges in `prompts.toml` now straddle the measured 78/99 pair.
+   **Treat both tempo rows in the table as void.** Until 0.1.16 the tempo
+   search walked its candidate lags in lag order rather than strength order,
+   so it could only ever report two of ≈215/136/99/78/65 BPM, whatever the
+   audio was — 78, 99 and 65 are all on that list. Re-measure the reference
+   before trusting or changing the BPM ranges on their account. The spectral
+   rows were computed independently and stand.
 2. The octave and brightness gaps are corrected **deterministically** by
    `MASTER_CHAIN` in `generate.py` — an ffmpeg EQ + compressor + limiter chain
    applied to every downloaded track. Asking the model for "infrasonic
@@ -318,12 +324,11 @@ missing. Most likely cause by far.
 **`torch.cuda.is_available()` is False** — walk the wheel ladder above; confirm
 `rocminfo | grep gfx1201`; check the user is in the `render`/`video` groups.
 
-**`smoke-test.sh` fails at the download step** — it is stale: it still requests
-`"audio_format": "opus"` and writes `.opus`, which trap 1 says cannot be
-produced on this install, so it dies with an empty file. It also omits
-`use_cot_caption: false` and `thinking: true`, so even a fixed version would not
-exercise the pipeline `generate.py` actually uses. Use
-`./engine/generate.py --tracks 1` as the end-to-end check.
+**`smoke-test.sh` fails at the download step** — fixed in 0.1.16. It now
+requests mp3 with the same `use_cot_caption: false` / `thinking: true` payload
+`generate.py` sends, and uses the result's `file` URL as given instead of
+percent-encoding it a second time. `./engine/generate.py --tracks 1` remains the
+fuller end-to-end check, since it also masters and records the track.
 
 **Out of memory during batch** — lower `batch_size`; confirm
 `PYTORCH_HIP_ALLOC_CONF=expandable_segments:True`; make sure no leftover engine

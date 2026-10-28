@@ -156,10 +156,18 @@ ELAPSED=$(( $(date +%s) - START_TS ))
 # ------------------------------------------------------------------------------
 say "Downloading audio"
 # ------------------------------------------------------------------------------
-ENCODED=$("$PY" -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$AUDIO_PATH")
+# The result's `file` field is already a percent-encoded relative URL
+# ("/v1/audio?path=%2F...mp3"); use it as-is. Only a bare filesystem path needs
+# wrapping and encoding, and encoding the URL a second time is a 404.
+if [[ "$AUDIO_PATH" == /v1/* ]]; then
+    AUDIO_URL="${API}${AUDIO_PATH}"
+else
+    ENCODED=$("$PY" -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$AUDIO_PATH")
+    AUDIO_URL="${API}/v1/audio?path=${ENCODED}"
+fi
 OUT="${OUT_DIR}/smoketest-$(date +%Y%m%d-%H%M%S).${FORMAT}"
 
-curl -sf --max-time 120 "${API}/v1/audio?path=${ENCODED}" -o "$OUT" \
+curl -sf --max-time 120 "$AUDIO_URL" -o "$OUT" \
     || die "Download failed for path: $AUDIO_PATH"
 
 [[ -s "$OUT" ]] || die "Downloaded file is empty."
