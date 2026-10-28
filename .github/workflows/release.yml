@@ -237,11 +237,26 @@ jobs:
       # Reverted work still appears, as both the change and its revert. That is
       # accurate rather than tidy: inventing a filter for it would mean guessing
       # which commits cancel out, and guessing wrong hides real changes.
+      #
+      # "The previous tag" means the previous tag that was released. A tag
+      # whose build failed and was superseded never reached anyone, and
+      # starting from it would leave out of the notes everything it held.
       - name: Write the release notes
         if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          PREV="$(git describe --tags --abbrev=0 "${GITHUB_REF_NAME}^" 2>/dev/null || true)"
+          PREV=""
+          REF="${GITHUB_REF_NAME}^"
+          while TAG="$(git describe --tags --abbrev=0 "$REF" 2>/dev/null)"; do
+            if gh release view "$TAG" >/dev/null 2>&1; then
+              PREV="$TAG"
+              break
+            fi
+            echo "skipping $TAG: tagged but never released"
+            REF="${TAG}^"
+          done
           if [ -n "$PREV" ]; then
             RANGE="${PREV}..${GITHUB_REF_NAME}"
             HEADING="Changes since ${PREV}"

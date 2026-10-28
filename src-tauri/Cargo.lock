@@ -2273,7 +2273,7 @@ dependencies = [
 
 [[package]]
 name = "music-ai-player"
-version = "0.1.16"
+version = "0.1.17"
 dependencies = [
  "gtk",
  "http-range",

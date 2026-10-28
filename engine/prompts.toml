@@ -32,7 +32,7 @@
 # Two fixes, both verified by re-measuring:
 #   1. bpm ranges now straddle the measured 78/99 pair.
 #      CAUTION: both tempo rows above came from a tempo detector that, until
-#      0.1.16, could only ever report lags 12/19/26/33/40 (≈215/136/99/78/65
+#      0.1.17, could only ever report lags 12/19/26/33/40 (≈215/136/99/78/65
 #      BPM) whatever the audio was. They are artefacts, not measurements.
 #      Re-measure the reference with the fixed analyze.py before moving any
 #      bpm range on their account. The spectral rows are unaffected.

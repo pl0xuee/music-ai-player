@@ -328,7 +328,7 @@ succeeds, which is why the app cannot simply report failure; it warns instead.
 Some desktops (GNOME's own media handler, another player that registered first)
 also claim the keys before the app can. The tray menu always works.
 
-**`engine/smoke-test.sh` fails to download** — fixed in 0.1.16 (it was encoding
+**`engine/smoke-test.sh` fails to download** — fixed in 0.1.17 (it was encoding
 the download URL twice). `./engine/generate.py --tracks 1` is still the fuller
 end-to-end check, because it also masters the track and records it in the
 library.

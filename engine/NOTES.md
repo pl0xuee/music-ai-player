@@ -289,7 +289,7 @@ docstring records this so nobody adds it back.
 Two fixes, both verified by re-measuring:
 
 1. BPM ranges in `prompts.toml` now straddle the measured 78/99 pair.
-   **Treat both tempo rows in the table as void.** Until 0.1.16 the tempo
+   **Treat both tempo rows in the table as void.** Until 0.1.17 the tempo
    search walked its candidate lags in lag order rather than strength order,
    so it could only ever report two of ≈215/136/99/78/65 BPM, whatever the
    audio was — 78, 99 and 65 are all on that list. Re-measure the reference
@@ -324,7 +324,7 @@ missing. Most likely cause by far.
 **`torch.cuda.is_available()` is False** — walk the wheel ladder above; confirm
 `rocminfo | grep gfx1201`; check the user is in the `render`/`video` groups.
 
-**`smoke-test.sh` fails at the download step** — fixed in 0.1.16. It now
+**`smoke-test.sh` fails at the download step** — fixed in 0.1.17. It now
 requests mp3 with the same `use_cot_caption: false` / `thinking: true` payload
 `generate.py` sends, and uses the result's `file` URL as given instead of
 percent-encoding it a second time. `./engine/generate.py --tracks 1` remains the
