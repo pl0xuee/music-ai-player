@@ -110,11 +110,19 @@ jobs:
           cd src-tauri/target/release/bundle/appimage
           APP="$(ls ./*.AppImage)"
           ./"$APP" --appimage-extract >/dev/null
-          test -f squashfs-root/usr/lib/libwayland-client.so.0 \
-            || { echo "::error::bundled libwayland-client.so.0 not found — has the bundler changed?"; exit 1; }
-          rm -f squashfs-root/usr/lib/libwayland-client.so.0
+          changed=0
 
-          # linuxdeploy's GTK hook hard-codes `export GDK_BACKEND=x11`, citing a
+          # The host's libwayland-client must be the one loaded, not a copy
+          # from the build runner that is older than the host's compositor.
+          # Searched for rather than expected at one path: newer bundlers stop
+          # shipping it at all, which is the outcome this wants anyway.
+          while IFS= read -r lib; do
+            rm -f "$lib"
+            echo "removed bundled ${lib#squashfs-root/}"
+            changed=1
+          done < <(find squashfs-root -name 'libwayland-client.so*')
+
+          # linuxdeploy's GTK hook used to hard-code `export GDK_BACKEND=x11`, citing a
           # 2024 WebKitGTK crash (tauri#8541). The hook is sourced by AppRun, so
           # nothing outside the bundle can override it, and the cost is that
           # every window is an XWayland window.
@@ -138,18 +146,37 @@ jobs:
           # and defaulted rather than assigned, so anyone who does hit a
           # regression can put x11 back from the environment without unpacking
           # the bundle.
+          #
+          # Tauri's bundler has since shipped the hook with that line commented
+          # out, so this only rewrites it when an older bundler forced it.
           HOOK=squashfs-root/apprun-hooks/linuxdeploy-plugin-gtk.sh
-          grep -q '^export GDK_BACKEND=x11' "$HOOK" \
-            || { echo "::error::no forced GDK_BACKEND=x11 in the GTK hook — has linuxdeploy changed?"; exit 1; }
-          sed -i 's|^export GDK_BACKEND=x11.*|export GDK_BACKEND="${GDK_BACKEND:-wayland,x11}"|' "$HOOK"
+          test -f "$HOOK" \
+            || { echo "::error::no GTK hook at $HOOK — has the bundler changed?"; exit 1; }
+          if grep -q '^export GDK_BACKEND=x11' "$HOOK"; then
+            sed -i 's|^export GDK_BACKEND=x11.*|export GDK_BACKEND="${GDK_BACKEND:-wayland,x11}"|' "$HOOK"
+            changed=1
+          fi
 
-          curl -fsSL -o appimagetool \
-            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
-          chmod +x appimagetool
-          ./appimagetool --appimage-extract-and-run squashfs-root repacked >/dev/null
-          mv repacked "$APP"
-          rm -rf squashfs-root appimagetool
-          echo "repacked $APP"
+          # The outcome, checked directly, whichever of the above had work to do.
+          if find squashfs-root -name 'libwayland-client.so*' | grep -q .; then
+            echo "::error::a bundled libwayland-client survived"; exit 1
+          fi
+          if grep -q '^export GDK_BACKEND=x11' "$HOOK"; then
+            echo "::error::the GTK hook still forces x11"; exit 1
+          fi
+
+          if [ "$changed" = 1 ]; then
+            curl -fsSL -o appimagetool \
+              https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+            chmod +x appimagetool
+            ./appimagetool --appimage-extract-and-run squashfs-root repacked >/dev/null
+            mv repacked "$APP"
+            rm -f appimagetool
+            echo "repacked $APP"
+          else
+            echo "$APP already matches; not repacked"
+          fi
+          rm -rf squashfs-root
 
       # Signing happens here rather than during the build, because the bundle
       # changed after the build. A signature made before the repack would be
